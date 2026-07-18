@@ -1,68 +1,63 @@
 from flask import Flask, Response
 import requests
-from bs4 import BeautifulSoup
 import re
 import os
 
 app = Flask(__name__)
 
-# Headers completos para simular o comportamento exato do navegador do App
+# Simulação profunda de um navegador Android
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
     "Referer": "https://megaflix.name/",
     "Origin": "https://megaflix.name",
-    "X-Requested-With": "XMLHttpRequest",
-    "Accept": "*/*",
-    "Accept-Language": "pt-BR,pt;q=0.9"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1"
 }
 
 def get_megaflix_channels():
-    url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
+    base_url = "https://app.megafrixapi.com/TV/1.2/"
+    channels_url = f"{base_url}?page=viewChannels"
+    
+    session = requests.Session()
     playlist = "#EXTM3U\n"
     
     try:
-        # Enviando POST com o campo userHistoric que o app exige
-        response = requests.post(url, headers=HEADERS, data={"userHistoric": "[]"}, timeout=20)
+        # PASSO 1: Visitar a home para estabelecer sessão e cookies
+        session.get(base_url, headers=HEADERS, timeout=10)
         
-        if response.status_code != 200:
-            return f"#EXTM3U\n# Erro: Status {response.status_code} no Servidor"
-
-        # Usando BeautifulSoup para ler o HTML
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # PASSO 2: Buscar os canais (POST)
+        response = session.post(
+            channels_url, 
+            headers=HEADERS, 
+            data={"userHistoric": "[]"}, 
+            timeout=15
+        )
         
-        # O MegaFlix organiza os canais em divs com a classe 'item'
-        items = soup.find_all('div', class_='item')
+        content = response.text
+        
+        # BUSCA AGRESSIVA: Procura qualquer coisa que pareça getSource('LINK', 'DATA')
+        # Captura o Link e o Nome (que costuma vir logo após no HTML)
+        # O padrão abaixo busca o link dentro do getSource e tenta pegar o texto da div 'title' mais próxima
+        raw_matches = re.findall(r"getSource\('([^']+)'.*?class=\"title\">(.*?)</div>", content, re.DOTALL)
 
-        for item in items:
-            try:
-                # 1. Extrair o nome do canal
-                title_div = item.find('div', class_='title')
-                name = title_div.get_text(strip=True) if title_div else "Canal Desconhecido"
-                
-                # 2. Extrair a URL (fica dentro do onclick)
-                # Exemplo: onclick="getSource('https://link.com', '...')"
-                onclick = item.get('onclick', '')
-                url_match = re.search(r"getSource\('([^']+)'", onclick)
-                
-                if url_match:
-                    stream_url = url_match.group(1)
-                    
-                    # 3. Extrair a Logo (se houver)
-                    preview_div = item.find('div', class_='preview')
-                    logo = preview_div.get_text(strip=True) if preview_div else ""
-                    
-                    # Formatação M3U
-                    playlist += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix TV",{name}\n'
-                    playlist += f"{stream_url}\n"
-            except:
-                continue
+        if not raw_matches:
+            # Tenta um segundo padrão caso o primeiro falhe
+            raw_matches = re.findall(r"class=\"item\".*?onclick=\"getSource\('([^']+)'.*?>(.*?)</div>", content, re.DOTALL)
 
+        for stream_url, name in raw_matches:
+            # Limpa tags HTML do nome do canal
+            clean_name = re.sub('<[^<]+?>', '', name).strip()
+            # Remove quebras de linha
+            clean_name = clean_name.replace('\n', ' ').replace('\r', '')
+            
+            playlist += f'#EXTINF:-1 group-title="MegaFlix TV",{clean_name}\n'
+            playlist += f"{stream_url}\n"
+
+        # Se ainda assim estiver vazio, retorna o erro com o tamanho da resposta para debug
         if playlist == "#EXTM3U\n":
-            # Se falhou, vamos tentar capturar qualquer getSource no texto bruto
-            links = re.findall(r"getSource\('([^']+)'.*?class=\"title\">(.*?)</div>", response.text, re.DOTALL)
-            for link, n in links:
-                playlist += f'#EXTINF:-1 group-title="MegaFlix TV",{n.strip()}\n'
-                playlist += f"{link}\n"
+            return f"#EXTM3U\n# ERRO: Servidor respondeu {len(content)} bytes, mas nao achou canais.\n# Verifique se o site esta ON: {channels_url}"
 
         return playlist
 
@@ -71,7 +66,7 @@ def get_megaflix_channels():
 
 @app.route('/')
 def index():
-    return "Servidor M3U Ativo! Use /playlist.m3u"
+    return "Servidor M3U Ativo! Link: /playlist.m3u"
 
 @app.route('/playlist.m3u')
 def playlist():
