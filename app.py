@@ -5,59 +5,62 @@ import os
 
 app = Flask(__name__)
 
-# Configurações idênticas ao aplicativo MegaFlix TV
-BASE_URL = "https://app.megafrixapi.com/TV/1.2/"
+# Configurações para burlar a proteção do servidor
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
-    "Referer": "https://megaflix.name",
+    "Referer": "https://megaflix.name/",
     "Origin": "https://megaflix.name",
     "X-Requested-With": "XMLHttpRequest"
 }
 
 def get_megaflix_channels():
+    # URL da página de canais do MegaFlix
+    url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
+    
     playlist = "#EXTM3U\n"
     try:
-        # O App MegaFlix usa POST para carregar as páginas
-        payload = {"userHistoric": "[]"}
-        response = requests.post(f"{BASE_URL}?page=viewChannels", headers=HEADERS, data=payload, timeout=15)
-        
-        if response.status_code != 200:
-            return f"#EXTM3U\n# Erro: Servidor retornou status {response.status_code}"
+        # Tenta pegar os canais via POST (como o app faz)
+        response = requests.post(url, headers=HEADERS, data={"userHistoric": "[]"}, timeout=15)
+        html = response.text
 
-        html_content = response.text
-        
-        # Regex melhorado para capturar os canais
-        # Procura pelo padrão: getSource('URL', 'DATA') ... class="title">NOME</div>
-        pattern = r"getSource\('([^']+)','[^']+'\).*?class=\"title\">(.*?)</div>"
-        matches = re.findall(pattern, html_content, re.DOTALL)
+        # 1. Tenta encontrar canais no formato do extrator (getSource)
+        # Esse regex captura: URL do canal e o Nome
+        matches = re.findall(r"getSource\('([^']+)'.*?class=\"title\">(.*?)</div>", html, re.DOTALL)
 
-        # Também tentamos buscar os logos (preview)
-        logos = re.findall(r"class=\"preview\">(.*?)</div>", html_content, re.DOTALL)
+        if matches:
+            for stream_url, name in matches:
+                # Limpa o nome (remove tags HTML como <b>, <br>, etc)
+                clean_name = re.sub('<[^<]+?>', '', name).strip()
+                
+                # Adiciona na lista M3U
+                playlist += f'#EXTINF:-1 group-title="MegaFlix TV",{clean_name}\n'
+                playlist += f"{stream_url}\n"
+        else:
+            # 2. Caso o formato mude, tenta uma busca genérica por títulos e onclicks
+            # Procura por qualquer div que tenha título e um link associado
+            alt_matches = re.findall(r"class=\"item\".*?onclick=\".*?'([^']+)'.*?\".*?class=\"title\">(.*?)</div>", html, re.DOTALL)
+            for stream_url, name in alt_matches:
+                clean_name = re.sub('<[^<]+?>', '', name).strip()
+                playlist += f'#EXTINF:-1 group-title="MegaFlix TV",{clean_name}\n'
+                playlist += f"{stream_url}\n"
 
-        if not matches:
-            return "#EXTM3U\n# Nenhum canal encontrado no HTML. Verifique os logs."
+        # Se após as duas buscas a lista continuar vazia, avisa no log da M3U
+        if playlist == "#EXTM3U\n":
+            return "#EXTM3U\n# Erro: O servidor do MegaFlix retornou a pagina, mas nenhum canal foi identificado no layout."
 
-        for i, (source_url, name) in enumerate(matches):
-            clean_name = re.sub('<[^<]+?>', '', name).strip() # Remove tags HTML do nome
-            logo = logos[i].strip() if i < len(logos) else ""
-            
-            # Formatação para o Tivimate
-            playlist += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix TV",{clean_name}\n'
-            playlist += f"{source_url}\n"
-            
         return playlist
 
     except Exception as e:
-        return f"#EXTM3U\n# Erro no Servidor: {str(e)}"
+        return f"#EXTM3U\n# Erro de Conexao: {str(e)}"
 
 @app.route('/')
 def index():
-    return "Servidor M3U Ativo! Link da lista: /playlist.m3u"
+    return "Servidor Online! Use o link /playlist.m3u no seu player."
 
 @app.route('/playlist.m3u')
 def playlist():
-    m3u_content = get_megaflix_channels()
-    return Response(m3u_content, mimetype='text/plain')
+    content = get_megaflix_channels()
+    return Response(content, mimetype='text/plain')
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
