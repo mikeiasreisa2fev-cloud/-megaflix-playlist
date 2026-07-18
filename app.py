@@ -1,102 +1,85 @@
 from flask import Flask, Response
 import requests
-from bs4 import BeautifulSoup
 import re
 import os
+import json
 
 app = Flask(__name__)
 
-# Headers para simular o App real
+# Headers de alta compatibilidade
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Referer": "https://megaflix.name/",
     "Origin": "https://megaflix.name",
-    "X-Requested-With": "XMLHttpRequest"
+    "X-Requested-With": "XMLHttpRequest",
+    "Content-Type": "application/x-www-form-urlencoded"
 }
 
-def get_channels():
+def get_megaflix_list():
     url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
     playlist = "#EXTM3U\n"
     
     try:
-        # Requisicao POST (o MegaFlix exige esse metodo)
-        response = requests.post(url, headers=HEADERS, data={"userHistoric": "[]"}, timeout=15)
+        # Requisição simulando o App
+        response = requests.post(url, headers=HEADERS, data={"userHistoric": "[]"}, timeout=20)
         html = response.text
 
-        # Analisando o HTML com BeautifulSoup
-        soup = BeautifulSoup(html, 'html.parser')
+        # 1. Divide o HTML por seções para manter os grupos (Filmes, Esportes, etc)
+        # O MegaFlix usa 'title-section' para os nomes das categorias
+        sections = re.split(r'class="title-section">', html)
         
-        # 1. Tenta encontrar por secoes (Categorias)
-        sections = soup.find_all(True, class_=re.compile("section|category|row"))
-        
-        # Se o site nao usar secoes claras, analisamos o documento inteiro
-        if not sections:
-            sections = [soup]
-
-        for section in sections:
-            # Tenta descobrir o nome do grupo/categoria
-            group_div = section.find(True, class_=re.compile("title-section|name-section|category-title"))
-            group_name = group_div.get_text(strip=True) if group_div else "MegaFlix TV"
+        for section in sections[1:]:
+            # Extrai o nome da categoria
+            group_name = section.split('</div>')[0].strip()
             
-            # Busca todos os itens de canais dentro desta secao
-            items = section.find_all(True, class_=re.compile("item|channel-item|card"))
-            
-            for item in items:
-                onclick = item.get('onclick', '')
-                # Padrao: getSource('URL', 'DATA_JSON')
-                match = re.search(r"getSource\('([^']+)','([^']+)'\)", onclick)
-                
-                if match:
-                    stream_url = match.group(1)
-                    data_json = match.group(2)
-                    
-                    # Captura o Nome do Canal
-                    title_div = item.find(True, class_=re.compile("title|name|label"))
-                    name = title_div.get_text(strip=True) if title_div else "Canal"
-                    
-                    # Ajuste de Link: Se o link vier vazio (ex: channel=), busca o ID no JSON
-                    if "channel=" in stream_url and stream_url.endswith("="):
-                        id_match = re.search(r'"id":"?(\d+)"?', data_json)
-                        if id_match:
-                            stream_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={id_match.group(1)}"
-                    
-                    # Limpa nomes com lixo HTML
-                    clean_name = re.sub('<[^<]+?>', '', name).strip()
-                    
-                    playlist += f'#EXTINF:-1 group-title="{group_name}",{clean_name}\n'
-                    playlist += f"{stream_url}\n"
+            # 2. Busca todos os blocos de canais (item)
+            # O getSource tem dois parâmetros: a URL base e um JSON com os detalhes
+            # getSource('URL', 'JSON_DATA')
+            channels = re.findall(r"getSource\s*\(\s*'([^']*)'\s*,\s*'([^']*)'\s*\)", section)
 
-        # 2. SE A PLAYLIST AINDA ESTIVER VAZIA: Faz uma busca bruta no texto
-        if playlist == "#EXTM3U\n":
-            # Procura qualquer getSource no texto e tenta achar o titulo do JSON
-            raw_matches = re.findall(r"getSource\('([^']+)','([^']+)'\)", html)
-            for link, data in raw_matches:
-                name_match = re.search(r'"titulo":"([^"]+)"', data)
-                name = name_match.group(1) if name_match else "Canal Extraido"
-                
-                if "channel=" in link and link.endswith("="):
-                    id_match = re.search(r'"id":"?(\d+)"?', data)
-                    if id_match:
-                        link = f"https://app.megafrixapi.com/get_token_channel.php?channel={id_match.group(1)}"
-                
-                playlist += f'#EXTINF:-1 group-title="MegaFlix TV",{name}\n'
-                playlist += f"{link}\n"
+            for stream_url, raw_data in channels:
+                try:
+                    # O MegaFlix envia os dados do canal como um texto JSON no segundo parâmetro
+                    # Exemplo: {"id":"123", "titulo":"HBO", "img":"..."}
+                    # Como o texto pode conter aspas escapadas, vamos limpar
+                    data_clean = raw_data.replace('\\"', '"')
+                    
+                    # Tenta extrair o Título e o ID usando busca direta de texto no JSON
+                    name_match = re.search(r'"titulo":"([^"]+)"', data_clean)
+                    id_match = re.search(r'"id":"?(\d+)"?', data_clean)
+                    logo_match = re.search(r'"img":"([^"]+)"', data_clean)
+
+                    name = name_match.group(1) if name_match else "Canal"
+                    canal_id = id_match.group(1) if id_match else ""
+                    logo = logo_match.group(1) if logo_match else ""
+
+                    # CORREÇÃO DO LINK: Se o link estiver incompleto, nós montamos ele
+                    final_url = stream_url
+                    if "channel=" in final_url and (final_url.endswith("=") or canal_id not in final_url):
+                        final_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={canal_id}"
+
+                    # Adiciona na M3U formatada
+                    playlist += f'#EXTINF:-1 tvg-logo="{logo}" group-title="{group_name}",{name}\n'
+                    playlist += f"{final_url}\n"
+                except:
+                    continue
 
         if playlist == "#EXTM3U\n":
-            return "#EXTM3U\n# Erro: O site carregou mas nao encontramos canais. O layout pode ter mudado drasticamente."
+            # Caso extremo: tenta capturar apenas links que pareçam canais no texto bruto
+            return f"#EXTM3U\n# Sem canais encontrados. Resposta do servidor: {len(html)} bytes."
 
         return playlist
 
     except Exception as e:
-        return f"#EXTM3U\n# Erro de Conexao: {str(e)}"
+        return f"#EXTM3U\n# Erro Geral: {str(e)}"
 
 @app.route('/')
 def home():
-    return "Servidor M3U Ativo! Use /playlist.m3u no Tivimate."
+    return "Servidor M3U MegaFlix Online! Acesse /playlist.m3u"
 
 @app.route('/playlist.m3u')
 def m3u():
-    return Response(get_channels(), mimetype='text/plain')
+    return Response(get_megaflix_list(), mimetype='text/plain')
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
