@@ -5,14 +5,11 @@ import os
 
 app = Flask(__name__)
 
-# Headers de um navegador Chrome Real para evitar bloqueios
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
     "Referer": "https://megaflix.name/",
     "Origin": "https://megaflix.name",
-    "Connection": "keep-alive"
+    "X-Requested-With": "XMLHttpRequest"
 }
 
 def get_channels():
@@ -20,38 +17,41 @@ def get_channels():
     playlist = "#EXTM3U\n"
     
     try:
-        # Tenta pegar a página. Se o POST falhar, tentamos GET.
-        # O MegaFlix as vezes aceita POST vazio ou com userHistoric
+        # Busca a lista de canais
         response = requests.post(url, headers=HEADERS, data={"userHistoric": "[]"}, timeout=15)
-        
-        if len(response.text) < 500: # Se a resposta for muito curta, o POST foi bloqueado
-            response = requests.get(url, headers=HEADERS, timeout=15)
-
         html = response.text
-        
-        # BUSCA TOTAL: Procura qualquer link que termine em .m3u8, .mp4, .mkv ou que esteja dentro de um getSource
-        # 1. Busca por getSource(URL)
-        links_getSource = re.findall(r"getSource\('([^']+)'", html)
-        # 2. Busca por links diretos na página
-        links_diretos = re.findall(r'(https?://[^\s"\'>]+\.(?:m3u8|mp4|mkv|ts))', html)
-        
-        # 3. Busca por nomes (Títulos)
-        names = re.findall(r'class="title">(.*?)</div>', html)
 
-        # Unifica os links encontrados
-        all_links = list(set(links_getSource + links_diretos))
+        # O segredo: Identificar cada seção (Grupo) e seus respectivos canais
+        # Vamos dividir o HTML por seções de categorias
+        sections = re.split(r'class="title-section">', html)
         
-        if not all_links:
-            # DEBUG: Se não achar nada, vamos listar o que o servidor enviou (resumo)
-            return f"#EXTM3U\n# DEBUG: Resposta do servidor: {len(html)} caracteres.\n# O layout pode ter mudado."
+        for section in sections[1:]: # Ignora o que vem antes da primeira seção
+            # 1. Extrai o nome do Grupo (ex: Esportes, Filmes, etc)
+            group_match = re.search(r'(.*?)</div>', section)
+            group_name = group_match.group(1).strip() if group_match else "MegaFlix TV"
 
-        for i, link in enumerate(all_links):
-            # Tenta associar um nome ao link, se não tiver, usa "Canal [Número]"
-            name = names[i] if i < len(names) else f"Canal {i+1}"
-            name = re.sub('<[^<]+?>', '', name).strip() # Limpa HTML
-            
-            playlist += f'#EXTINF:-1 group-title="MegaFlix TV",{name}\n'
-            playlist += f"{link}\n"
+            # 2. Extrai os canais dentro DESTA seção
+            # Buscamos o link e o nome que estão no mesmo bloco 'item'
+            items = re.findall(r'class="item".*?getSource\(\'([^\']+)\',\'([^\']+)\'\).*?class="title">(.*?)</div>', section, re.DOTALL)
+
+            for stream_url, data_json, name in items:
+                # Limpa o nome do canal
+                clean_name = re.sub('<[^<]+?>', '', name).strip()
+                
+                # CORREÇÃO DE LINK: Se o link vier incompleto (terminando em channel=),
+                # tentamos extrair o ID do segundo parâmetro (data_json)
+                if stream_url.endswith("channel=") or "channel=" not in stream_url:
+                    # Tenta achar o ID dentro do JSON de dados
+                    id_match = re.search(r'"id":"(\d+)"', data_json)
+                    if id_match:
+                        stream_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={id_match.group(1)}"
+
+                # Adiciona à playlist formatada para Tivimate
+                playlist += f'#EXTINF:-1 group-title="{group_name}",{clean_name}\n'
+                playlist += f"{stream_url}\n"
+
+        if playlist == "#EXTM3U\n":
+            return "#EXTM3U\n# Erro: Servidor retornou dados, mas os canais estao em formato desconhecido."
 
         return playlist
 
@@ -60,7 +60,7 @@ def get_channels():
 
 @app.route('/')
 def home():
-    return "Servidor M3U ON. Link: /playlist.m3u"
+    return "Servidor M3U MegaFlix Online! Use /playlist.m3u"
 
 @app.route('/playlist.m3u')
 def m3u():
