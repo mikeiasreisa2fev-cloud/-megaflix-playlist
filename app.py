@@ -18,82 +18,70 @@ def get_channels():
     playlist = "#EXTM3U\n"
     
     try:
-        # Busca o conteúdo do servidor
         response = requests.post(url, headers=HEADERS, data={"userHistoric": "[]"}, timeout=20)
         content = response.text
 
-        # 1. Tenta encontrar dados codificados em Base64 (comum no MegaFlix)
-        # O app usa data-data="BASE64" ou getSource('url', 'BASE64')
-        encoded_blocks = re.findall(r'data-data="([^"]+)"', content)
-        if not encoded_blocks:
-            encoded_blocks = re.findall(r"getSource\s*\(\s*'[^']*'\s*,\s*'([^']*)'\s*\)", content)
+        # Divide o HTML por seções para identificar os grupos
+        sections = re.split(r'class="title-section">', content)
+        
+        for section in sections[1:]:
+            # 1. Extrai o nome da Categoria/Grupo
+            group_match = re.search(r'([^<]+)</div>', section)
+            group_name = group_match.group(1).strip() if group_match else "MegaFlix TV"
 
-        found_channels = []
+            # 2. Busca canais nesta seção (Base64 ou JSON)
+            items = re.findall(r'data-data="([^"]+)"', section)
+            if not items:
+                items = re.findall(r"getSource\s*\(\s*'[^']*'\s*,\s*'([^']*)'\s*\)", section)
 
-        for block in encoded_blocks:
-            try:
-                # Tenta decodificar o Base64
-                decoded = base64.b64decode(block).decode('utf-8')
-                data = json.loads(decoded)
-                
-                cid = data.get('id')
-                name = data.get('titulo', data.get('name'))
-                logo = data.get('img', data.get('poster', ''))
-                
-                if cid and name:
-                    found_channels.append({'id': cid, 'name': name, 'logo': logo})
-            except:
-                continue
+            my_url = request.host_url.rstrip('/')
 
-        # 2. Se não achou nada em Base64, tenta busca por texto limpo (JSON simples)
-        if not found_channels:
-            raw_data = re.findall(r'\{[^{]*?"id":"?(\d+)"?[^{]*?"titulo":"([^"]+)"[^}]*?\}', content)
-            for cid, name in raw_data:
-                found_channels.append({'id': cid, 'name': name, 'logo': ''})
-
-        # Monta a M3U final
-        my_url = request.host_url.rstrip('/')
-        for ch in found_channels:
-            # Limpa o nome de tags HTML
-            clean_name = re.sub('<[^<]+?>', '', ch['name']).strip()
-            # Link que passa pelo nosso extrator
-            stream_link = f"{my_url}/play/{ch['id']}"
-            
-            playlist += f'#EXTINF:-1 tvg-logo="{ch["logo"]}" group-title="MegaFlix TV",{clean_name}\n'
-            playlist += f"{stream_link}\n"
-
-        if playlist == "#EXTM3U\n":
-            # Caso extremo de erro
-            snippet = content[:200].replace('\n', ' ')
-            return f"#EXTM3U\n# Erro: Nao foi possivel decifrar os canais.\n# Inicio do codigo recebido: {snippet}"
+            for block in items:
+                try:
+                    # Decodifica os dados do canal
+                    try:
+                        decoded = base64.b64decode(block).decode('utf-8')
+                        data = json.loads(decoded)
+                    except:
+                        data = json.loads(block.replace('\\"', '"'))
+                    
+                    cid = data.get('id')
+                    name = data.get('titulo', data.get('name'))
+                    logo = data.get('img', data.get('poster', ''))
+                    
+                    if cid and name:
+                        clean_name = re.sub('<[^<]+?>', '', name).strip()
+                        # Link intermediário para gerar o token na hora
+                        stream_link = f"{my_url}/play/{cid}"
+                        
+                        playlist += f'#EXTINF:-1 tvg-logo="{logo}" group-title="{group_name}",{clean_name}\n'
+                        playlist += f"{stream_link}\n"
+                except:
+                    continue
 
         return playlist
-
     except Exception as e:
-        return f"#EXTM3U\n# Erro de Conexao: {str(e)}"
+        return f"#EXTM3U\n# Erro: {str(e)}"
 
 @app.route('/play/<canal_id>')
 def play(canal_id):
     try:
-        # Este link simula a geração do token do canal
         extrator_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={canal_id}"
-        # Precisamos do Referer correto para o servidor liberar o m3u8
         res = requests.get(extrator_url, headers=HEADERS, timeout=10)
         
-        # Procura o link .m3u8 real dentro do código do extrator
+        # Procura o link .m3u8 real
         m3u8_match = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', res.text)
-        
         if m3u8_match:
             return redirect(m3u8_match.group(1))
         
-        # Se for link de redirecionamento JS
+        # Fallback para redirecionamento direto
         js_match = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', res.text)
         if js_match:
             return redirect(js_match.group(1))
 
-        return "Link m3u8 nao encontrado no extrator", 404
+        return "Link não encontrado", 404
     except:
-        return "Erro no servidor de play", 500
+        return "Erro no extrator", 500
 
 @app.route('/playlist.m3u')
 def m3u_route():
