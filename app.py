@@ -1,12 +1,12 @@
-from flask import Flask, Response
+from flask import Flask, Response, redirect
 import requests
 import re
 import os
 import json
-import base64
 
 app = Flask(__name__)
 
+# Headers para simular o App
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Referer": "https://megaflix.name/",
@@ -18,66 +18,76 @@ def get_channels():
     playlist = "#EXTM3U\n"
     
     try:
-        # Pega o conteúdo bruto do servidor
-        response = requests.post(url, headers=HEADERS, data={"userHistoric": "[]"}, timeout=20)
+        response = requests.post(url, headers=HEADERS, data={"userHistoric": "[]"}, timeout=15)
         content = response.text
 
-        # SCANNER: Busca todas as chamadas 'getSource' ignorando formatação
-        # Captura o Link (Parâmetro 1) e os Dados (Parâmetro 2)
-        matches = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
+        # BUSCA POR BLOCOS (Garante que ID e Titulo fiquem juntos)
+        # Procuramos por qualquer estrutura que contenha um ID e um Titulo próximos
+        items = re.findall(r'\{[^{]*?"id":"(\d+)"[^{]*?"titulo":"([^"]+)"[^}]*?\}', content)
 
-        for stream_url, raw_data in matches:
+        if not items:
+            # Tenta um segundo padrao se o primeiro falhar
+            items = re.findall(r"getSource\s*\(\s*'[^']*'\s*,\s*'(.*?)'\s*\)", content)
+            
+        for item in items:
             try:
-                # O MegaFlix as vezes envia os dados em Base64, as vezes em JSON puro
-                # Vamos tentar decodificar de todas as formas
-                data_obj = {}
-                try:
-                    # Tenta Base64
-                    decoded = base64.b64decode(raw_data).decode('utf-8')
-                    data_obj = json.loads(decoded)
-                except:
-                    # Se não for b64, tenta JSON direto limpando aspas
-                    clean_json = raw_data.replace('\\"', '"')
-                    data_obj = json.loads(clean_json)
+                if isinstance(item, tuple):
+                    canal_id, name = item
+                else:
+                    # Se caiu no segundo padrao, o item e uma string de dados. Extraímos o ID e Nome.
+                    data = item.replace("\\'", "'").replace('\\"', '"')
+                    id_m = re.search(r'"id":"?(\d+)"?', data)
+                    name_m = re.search(r'"titulo":"([^"]+)"', data)
+                    if not id_m or not name_m: continue
+                    canal_id = id_m.group(1)
+                    name = name_m.group(1)
 
-                # Extrai as informações do objeto
-                name = data_obj.get('titulo', data_obj.get('name', 'Canal s/ Nome'))
-                canal_id = data_obj.get('id', '')
-                logo = data_obj.get('img', data_obj.get('poster', ''))
-                group = data_obj.get('genre', 'MegaFlix TV')
-
-                # RECONSTRUÇÃO DO LINK: Se o link vier cortado (ex: channel=), nós completamos
-                if "channel=" in stream_url and not re.search(r'\d+$', stream_url):
-                    stream_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={canal_id}"
-
-                # Adiciona à lista se tiver um nome válido
-                if canal_id or name:
-                    playlist += f'#EXTINF:-1 tvg-logo="{logo}" group-title="{group}",{name}\n'
-                    playlist += f"{stream_url}\n"
+                # Criamos o link que passa pelo NOSSO servidor para extrair o m3u8 real
+                # O Tivimate vai chamar: https://seu-app.onrender.com/play/105
+                my_url = request.host_url.rstrip('/')
+                stream_link = f"{my_url}/play/{canal_id}"
+                
+                playlist += f'#EXTINF:-1 group-title="MegaFlix TV",{name}\n'
+                playlist += f"{stream_link}\n"
             except:
                 continue
 
-        # SE O SCANNER FALHOU: Tenta busca por padrões de texto fixo
         if playlist == "#EXTM3U\n":
-            # Busca IDs e Nomes que costumam estar perto um do outro
-            ids = re.findall(r'"id":"(\d+)"', content)
-            titulos = re.findall(r'"titulo":"([^"]+)"', content)
-            for i in range(min(len(ids), len(titulos))):
-                playlist += f'#EXTINF:-1 group-title="MegaFlix TV",{titulos[i]}\n'
-                playlist += f"https://app.megafrixapi.com/get_token_channel.php?channel={ids[i]}\n"
+            return "#EXTM3U\n# Erro Critico: Servidor MegaFlix mudou a criptografia dos dados."
 
         return playlist
 
     except Exception as e:
-        return f"#EXTM3U\n# Erro de Conexao: {str(e)}"
+        return f"#EXTM3U\n# Erro: {str(e)}"
 
-@app.route('/')
-def home():
-    return "Servidor M3U Online! Use /playlist.m3u"
+# ROTA PARA EXTRAIR O M3U8 REAL NA HORA DO PLAY
+@app.route('/play/<canal_id>')
+def play(canal_id):
+    try:
+        # 1. Simula a chamada que o App faria para pegar o token
+        extrator_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={canal_id}"
+        res = requests.get(extrator_url, headers=HEADERS, timeout=10)
+        
+        # 2. Busca o link .m3u8 real dentro da pagina do extrator
+        # Geralmente fica em 'file': 'http...' ou source src='...'
+        m3u8_match = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', res.text)
+        
+        if m3u8_match:
+            # Redireciona o Tivimate para o link real do vídeo
+            return redirect(m3u8_match.group(1))
+        else:
+            return "Video nao encontrado", 404
+    except:
+        return "Erro ao extrair video", 500
 
 @app.route('/playlist.m3u')
 def m3u():
+    from flask import request
     return Response(get_channels(), mimetype='text/plain')
+
+@app.route('/')
+def home():
+    return "Servidor M3U MegaFlix Ativo!"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
