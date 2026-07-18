@@ -5,59 +5,53 @@ import os
 
 app = Flask(__name__)
 
-# Simulação profunda de um navegador Android
+# Headers de um navegador Chrome Real para evitar bloqueios
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
     "Referer": "https://megaflix.name/",
     "Origin": "https://megaflix.name",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1"
+    "Connection": "keep-alive"
 }
 
-def get_megaflix_channels():
-    base_url = "https://app.megafrixapi.com/TV/1.2/"
-    channels_url = f"{base_url}?page=viewChannels"
-    
-    session = requests.Session()
+def get_channels():
+    url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
     playlist = "#EXTM3U\n"
     
     try:
-        # PASSO 1: Visitar a home para estabelecer sessão e cookies
-        session.get(base_url, headers=HEADERS, timeout=10)
+        # Tenta pegar a página. Se o POST falhar, tentamos GET.
+        # O MegaFlix as vezes aceita POST vazio ou com userHistoric
+        response = requests.post(url, headers=HEADERS, data={"userHistoric": "[]"}, timeout=15)
         
-        # PASSO 2: Buscar os canais (POST)
-        response = session.post(
-            channels_url, 
-            headers=HEADERS, 
-            data={"userHistoric": "[]"}, 
-            timeout=15
-        )
-        
-        content = response.text
-        
-        # BUSCA AGRESSIVA: Procura qualquer coisa que pareça getSource('LINK', 'DATA')
-        # Captura o Link e o Nome (que costuma vir logo após no HTML)
-        # O padrão abaixo busca o link dentro do getSource e tenta pegar o texto da div 'title' mais próxima
-        raw_matches = re.findall(r"getSource\('([^']+)'.*?class=\"title\">(.*?)</div>", content, re.DOTALL)
+        if len(response.text) < 500: # Se a resposta for muito curta, o POST foi bloqueado
+            response = requests.get(url, headers=HEADERS, timeout=15)
 
-        if not raw_matches:
-            # Tenta um segundo padrão caso o primeiro falhe
-            raw_matches = re.findall(r"class=\"item\".*?onclick=\"getSource\('([^']+)'.*?>(.*?)</div>", content, re.DOTALL)
+        html = response.text
+        
+        # BUSCA TOTAL: Procura qualquer link que termine em .m3u8, .mp4, .mkv ou que esteja dentro de um getSource
+        # 1. Busca por getSource(URL)
+        links_getSource = re.findall(r"getSource\('([^']+)'", html)
+        # 2. Busca por links diretos na página
+        links_diretos = re.findall(r'(https?://[^\s"\'>]+\.(?:m3u8|mp4|mkv|ts))', html)
+        
+        # 3. Busca por nomes (Títulos)
+        names = re.findall(r'class="title">(.*?)</div>', html)
 
-        for stream_url, name in raw_matches:
-            # Limpa tags HTML do nome do canal
-            clean_name = re.sub('<[^<]+?>', '', name).strip()
-            # Remove quebras de linha
-            clean_name = clean_name.replace('\n', ' ').replace('\r', '')
+        # Unifica os links encontrados
+        all_links = list(set(links_getSource + links_diretos))
+        
+        if not all_links:
+            # DEBUG: Se não achar nada, vamos listar o que o servidor enviou (resumo)
+            return f"#EXTM3U\n# DEBUG: Resposta do servidor: {len(html)} caracteres.\n# O layout pode ter mudado."
+
+        for i, link in enumerate(all_links):
+            # Tenta associar um nome ao link, se não tiver, usa "Canal [Número]"
+            name = names[i] if i < len(names) else f"Canal {i+1}"
+            name = re.sub('<[^<]+?>', '', name).strip() # Limpa HTML
             
-            playlist += f'#EXTINF:-1 group-title="MegaFlix TV",{clean_name}\n'
-            playlist += f"{stream_url}\n"
-
-        # Se ainda assim estiver vazio, retorna o erro com o tamanho da resposta para debug
-        if playlist == "#EXTM3U\n":
-            return f"#EXTM3U\n# ERRO: Servidor respondeu {len(content)} bytes, mas nao achou canais.\n# Verifique se o site esta ON: {channels_url}"
+            playlist += f'#EXTINF:-1 group-title="MegaFlix TV",{name}\n'
+            playlist += f"{link}\n"
 
         return playlist
 
@@ -65,13 +59,12 @@ def get_megaflix_channels():
         return f"#EXTM3U\n# Erro de Conexao: {str(e)}"
 
 @app.route('/')
-def index():
-    return "Servidor M3U Ativo! Link: /playlist.m3u"
+def home():
+    return "Servidor M3U ON. Link: /playlist.m3u"
 
 @app.route('/playlist.m3u')
-def playlist():
-    content = get_megaflix_channels()
-    return Response(content, mimetype='text/plain')
+def m3u():
+    return Response(get_channels(), mimetype='text/plain')
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
