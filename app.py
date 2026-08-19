@@ -27,8 +27,9 @@ session.headers.update(HEADERS)
 
 db = {"links": {}, "ids": [], "last_playlist": ""}
 
-# --- LISTA MANUAL [S2] ATUALIZADA (V19.1) ---
+# --- LISTA MANUAL [S2] ATUALIZADA (V19.2) ---
 MANUAL_CHANNELS = [
+    ("RÁTIMBUM [S2]", "http://45.190.28.50/RATIMBUM/index.m3u8"),
     ("NICKONLINE [S2]", "https://x1colegal.com/"),
     ("NICKTOONS [S2]", "https://stmv2.srvif.com/nicktoons/nicktoons/playlist.m3u8"),
     ("GLOBO NEWS [S2]", "http://177.52.24.163/GLOBO-NEWS-HD/index.m3u8"),
@@ -165,7 +166,7 @@ def m3u_route():
         output += f'#EXTVLCOPT:http-reconnect=true\n'
         output += f"{link}\n"
 
-    # 2. Canais da API
+    # 2. Canais da API com Camuflagem de App
     try:
         api_url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
         r = session.post(api_url, data={"userHistoric": "[]"}, timeout=20)
@@ -206,7 +207,7 @@ def m3u_route():
 
 @app.route('/')
 def home():
-    return "Servidor V19.1 Híbrido ONLINE - NICKTOONS Adicionado"
+    return "Servidor V19.2 Híbrido ONLINE - RÁTIMBUM Adicionado"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
