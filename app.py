@@ -10,110 +10,118 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
-# --- NÚCLEO DE OPERAÇÕES TÁTICAS (MILITAR) ---
-# Configuração de persistência de alta densidade
+# --- MOTOR DE ESTABILIDADE TÁTICA ---
 session = requests.Session()
-session.adapter = requests.adapters.HTTPAdapter(
-    pool_connections=500, # Capacidade massiva
-    pool_maxsize=1000, 
-    max_retries=10, 
-    pool_block=False
+adapter = requests.adapters.HTTPAdapter(
+    pool_connections=150, 
+    pool_maxsize=300, 
+    max_retries=5
 )
+session.mount('https://', adapter)
+session.mount('http://', adapter)
 
-# Assinatura de Kernel capturada de um dispositivo Android Rooted
-TACTICAL_UA = "Dalvik/2.1.0 (Linux; U; Android 12; SM-S908B Build/SP1A.210812.016)"
-APP_SIG = "com.megaflix.app"
+# Identidade do App Oficial (Garante o sinal sem travas)
+UA_MILITARY = "Mozilla/5.0 (Linux; Android 11; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
+APP_PKG = "com.megaflix.app"
 ORIGIN = "https://megaflix.name"
 
-GLOBAL_HEADERS = {
-    "User-Agent": TACTICAL_UA,
-    "X-Requested-With": APP_SIG,
+HEADERS = {
+    "User-Agent": UA_MILITARY,
+    "X-Requested-With": APP_PKG,
     "Referer": f"{ORIGIN}/",
     "Origin": ORIGIN,
-    "Accept-Encoding": "gzip, deflate",
     "Connection": "keep-alive"
 }
-session.headers.update(GLOBAL_HEADERS)
+session.headers.update(HEADERS)
 
-# Banco de Dados Tático em Memória
-intel = {"links": {}, "ids": [], "status": "READY"}
+# Memória de Inteligência (RAM)
+db = {"links": {}, "ids": []}
 
-def secure_fetch(cid):
-    """Obtém o link com validação de integridade de fluxo"""
+def get_best_quality(url):
+    """Engenharia de Bitrate: Escolhe a maior resolução antes de enviar ao player"""
     try:
-        token_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={cid}"
-        # Simula o tempo de interação humana antes de pedir o token
-        r = session.get(token_url, timeout=10)
+        r = session.get(url, timeout=6)
+        if "#EXT-X-STREAM-INF" in r.text:
+            variants = re.findall(r'BANDWIDTH=(\d+).*?\n(.*?\.m3u8)', r.text)
+            if variants:
+                # Ordena pela maior banda (Bandwidth)
+                variants.sort(key=lambda x: int(x[0]), reverse=True)
+                best = variants[0][1]
+                if not best.startswith("http"):
+                    base = url.rsplit('/', 1)[0]
+                    best = f"{base}/{best}"
+                return best
+    except:
+        pass
+    return url
+
+def fetch_link_secure(cid):
+    """Busca o token do canal e limpa o link para compatibilidade universal"""
+    try:
+        url = f"https://app.megafrixapi.com/get_token_channel.php?channel={cid}"
+        r = session.get(url, timeout=10)
         
-        # Extração de link via regex de profundidade
+        # Captura o link .m3u8 real (Limpeza de escapes)
         match = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', r.text)
         if not match:
             match = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', r.text)
         
         if match:
-            url = match.group(1).replace('\\/', '/').replace('\\', '')
-            
-            # Engenharia de Qualidade: Aprofunda para pegar o fluxo de maior Bandwidth
-            try:
-                m_res = session.get(url, timeout=5)
-                if "#EXT-X-STREAM-INF" in m_res.text:
-                    variants = re.findall(r'BANDWIDTH=(\d+).*?\n(.*?\.m3u8)', m_res.text)
-                    if variants:
-                        variants.sort(key=lambda x: int(x[0]), reverse=True)
-                        best = variants[0][1]
-                        url = url.rsplit('/', 1)[0] + '/' + best if not best.startswith("http") else best
-            except:
-                pass
-            return url
+            clean_url = match.group(1).replace('\\/', '/').replace('\\', '')
+            # Otimiza a qualidade antes do play
+            return get_best_quality(clean_url)
     except:
         return None
     return None
 
-def background_intelligence():
-    """Motor de vigilância: Mantém os alvos (canais) sempre prontos"""
-    executor = ThreadPoolExecutor(max_workers=15)
+def preloader_worker():
+    """Motor de Pre-aquecimento: Mantém os links prontos 24/7"""
+    executor = ThreadPoolExecutor(max_workers=10)
     while True:
         try:
-            targets = intel["ids"][:60]
-            for cid in targets:
-                # Otimização: Só atualiza se o link estiver perto de expirar
-                url = secure_fetch(cid)
-                if url:
-                    intel["links"][cid] = {"url": url, "ts": time.time()}
-                time.sleep(0.2) # Frequência de rádio tática
-            time.sleep(60) # Ciclo de renovação militar
+            if db["ids"]:
+                targets = db["ids"][:50]
+                for cid in targets:
+                    link = fetch_link_secure(cid)
+                    if link:
+                        db["links"][cid] = {"url": link, "time": time.time()}
+                    time.sleep(0.5)
+            time.sleep(150)
         except:
-            time.sleep(10)
+            time.sleep(30)
 
-threading.Thread(target=background_intelligence, daemon=True).start()
+threading.Thread(target=preloader_worker, daemon=True).start()
 
 @app.route('/play/<canal_id>')
 def play(canal_id):
-    """Redirecionamento com Injeção de Parâmetros de Ofuscação"""
-    target = intel["links"].get(canal_id)
-    url = target["url"] if target and (time.time() - target["ts"] < 120) else secure_fetch(canal_id)
+    """Redirecionamento Limpo (Compatível com 100% dos Players)"""
+    cached = db["links"].get(canal_id)
+    
+    # Se link no cache tiver menos de 3 minutos, entrega na hora
+    if cached and (time.time() - cached["time"] < 180):
+        url = cached["url"]
+    else:
+        url = fetch_link_secure(canal_id)
     
     if url:
-        # TÉCNICA MILITAR: Injetamos os headers na URL final para players que aceitam (VLC/OTT)
-        # Isso garante que o player se camufle como o app original durante o streaming
-        masked_url = f"{url}|User-Agent={TACTICAL_UA}&X-Requested-With={APP_SIG}&Referer={ORIGIN}/"
-        return redirect(masked_url, code=302)
+        # Redirecionamento 302 SEM caracteres especiais (|) para não quebrar o player
+        return redirect(url, code=302)
     
-    return "TARGET_OFFLINE", 404
+    return "Offline", 404
 
 @app.route('/playlist.m3u')
-def tactical_playlist():
-    """Gera o Manifesto M3U com Defesas Anti-Travamento"""
+def m3u_route():
+    """Gera playlist M3U com Metadados Anti-Travamento"""
     try:
-        r = session.post(f"https://app.megafrixapi.com/TV/1.2/?page=viewChannels", 
-                         data={"userHistoric": "[]"}, timeout=15)
+        r = session.post(f"{ORIGIN}/TV/1.2/?page=viewChannels", 
+                         data={"userHistoric": "[]"}, timeout=12)
         
         items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", r.text)
         data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', r.text)
         
         output = "#EXTM3U\n"
         base_url = request.host_url.rstrip('/')
-        ids = []
+        new_ids = []
 
         for raw in ([d for l, d in items] + data_blocks):
             try:
@@ -124,29 +132,32 @@ def tactical_playlist():
                 
                 cid = data.get('id')
                 if not cid: continue
-                ids.append(cid)
+                new_ids.append(cid)
                 
                 name = re.sub('<[^<]+?>', '', data.get('titulo', data.get('name', 'Canal'))).strip()
                 logo = data.get('img', data.get('poster', ''))
                 
-                # METADADOS DE ALTA DISPONIBILIDADE
-                output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MEGAFLIX MILITARY-V15",{name}\n'
-                # 1. Buffer de 60 Segundos (Resiliência Total)
-                output += f'#EXTVLCOPT:network-caching=60000\n'
-                # 2. Camuflagem de Rede
-                output += f'#EXTVLCOPT:http-user-agent={TACTICAL_UA}\n'
-                output += f'#EXTVLCOPT:http-referrer={ORIGIN}/\n'
-                # 3. Headers para Apps de Elite (TiviMate/OTT)
-                output += f'#EXTHTTP:{{"User-Agent":"{TACTICAL_UA}","X-Requested-With":"{APP_SIG}","Referer":"{ORIGIN}/"}}\n'
+                output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix PREMIUM V16",{name}\n'
+                
+                # --- INSTRUÇÕES DE ALTA PERFORMANCE (Buffer de 30s) ---
+                output += f'#EXTVLCOPT:network-caching=30000\n'
+                output += f'#EXTVLCOPT:http-user-agent={UA_MILITARY}\n'
+                # Tag JSON Headers para players inteligentes (TiviMate, Smarters)
+                output += f'#EXTHTTP:{{"User-Agent":"{UA_MILITARY}","X-Requested-With":"{APP_PKG}"}}\n'
                 
                 output += f"{base_url}/play/{cid}\n"
             except:
                 continue
         
-        intel["ids"] = ids
+        db["ids"] = new_ids
         return Response(output, mimetype='text/plain')
     except:
-        return "INTEL_FAILURE", 500
+        return "Erro", 500
+
+@app.route('/')
+def home():
+    return f"V16 ONLINE - Inteligência Ativa"
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), threaded=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, threaded=True)
