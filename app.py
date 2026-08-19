@@ -10,114 +10,93 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
-# --- MOTOR DE ESTABILIDADE TÁTICA ---
+# --- CONFIGURAÇÕES DE RECONECTIVIDADE ---
 session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(
-    pool_connections=150, 
-    pool_maxsize=300, 
-    max_retries=5
-)
+adapter = requests.adapters.HTTPAdapter(pool_connections=100, pool_maxsize=200, max_retries=5)
 session.mount('https://', adapter)
-session.mount('http://', adapter)
 
-# Identidade do App Oficial (Garante o sinal sem travas)
-UA_MILITARY = "Mozilla/5.0 (Linux; Android 11; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
-APP_PKG = "com.megaflix.app"
-ORIGIN = "https://megaflix.name"
-
+# Identidade Oficial do App (Engenharia Reversa)
+UA_OFFICIAL = "Mozilla/5.0 (Linux; Android 11; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
 HEADERS = {
-    "User-Agent": UA_MILITARY,
-    "X-Requested-With": APP_PKG,
-    "Referer": f"{ORIGIN}/",
-    "Origin": ORIGIN,
+    "User-Agent": UA_OFFICIAL,
+    "X-Requested-With": "com.megaflix.app",
+    "Referer": "https://megaflix.name/",
+    "Origin": "https://megaflix.name",
     "Connection": "keep-alive"
 }
 session.headers.update(HEADERS)
 
-# Memória de Inteligência (RAM)
-db = {"links": {}, "ids": []}
+# Cache de Memória
+db = {"links": {}, "ids": [], "last_playlist": ""}
 
 def get_best_quality(url):
-    """Engenharia de Bitrate: Escolhe a maior resolução antes de enviar ao player"""
+    """Garante que o link entregue seja o de maior resolução"""
     try:
-        r = session.get(url, timeout=6)
+        r = session.get(url, timeout=7, verify=True)
         if "#EXT-X-STREAM-INF" in r.text:
             variants = re.findall(r'BANDWIDTH=(\d+).*?\n(.*?\.m3u8)', r.text)
             if variants:
-                # Ordena pela maior banda (Bandwidth)
                 variants.sort(key=lambda x: int(x[0]), reverse=True)
                 best = variants[0][1]
-                if not best.startswith("http"):
-                    base = url.rsplit('/', 1)[0]
-                    best = f"{base}/{best}"
-                return best
-    except:
-        pass
+                return urljoin(url, best) if not best.startswith("http") else best
+    except: pass
     return url
 
-def fetch_link_secure(cid):
-    """Busca o token do canal e limpa o link para compatibilidade universal"""
+def fetch_link(cid):
+    """Busca o link do canal na API Oficial"""
     try:
+        # URL CORRIGIDA PARA A API
         url = f"https://app.megafrixapi.com/get_token_channel.php?channel={cid}"
-        r = session.get(url, timeout=10)
+        r = session.get(url, timeout=15) # Aumentado timeout para evitar erro no Render
         
-        # Captura o link .m3u8 real (Limpeza de escapes)
         match = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', r.text)
         if not match:
             match = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', r.text)
         
         if match:
-            clean_url = match.group(1).replace('\\/', '/').replace('\\', '')
-            # Otimiza a qualidade antes do play
-            return get_best_quality(clean_url)
-    except:
-        return None
+            return match.group(1).replace('\\/', '/').replace('\\', '')
+    except: return None
     return None
 
-def preloader_worker():
-    """Motor de Pre-aquecimento: Mantém os links prontos 24/7"""
-    executor = ThreadPoolExecutor(max_workers=10)
+def preloader():
+    """Motor de fundo para deixar o play instantâneo"""
     while True:
         try:
             if db["ids"]:
-                targets = db["ids"][:50]
-                for cid in targets:
-                    link = fetch_link_secure(cid)
+                for cid in db["ids"][:40]:
+                    link = fetch_link(cid)
                     if link:
                         db["links"][cid] = {"url": link, "time": time.time()}
                     time.sleep(0.5)
-            time.sleep(150)
-        except:
-            time.sleep(30)
+            time.sleep(180)
+        except: time.sleep(30)
 
-threading.Thread(target=preloader_worker, daemon=True).start()
+threading.Thread(target=preloader, daemon=True).start()
 
 @app.route('/play/<canal_id>')
 def play(canal_id):
-    """Redirecionamento Limpo (Compatível com 100% dos Players)"""
+    """Redirecionamento compatível com qualquer App IPTV"""
     cached = db["links"].get(canal_id)
-    
-    # Se link no cache tiver menos de 3 minutos, entrega na hora
-    if cached and (time.time() - cached["time"] < 180):
+    if cached and (time.time() - cached["time"] < 240):
         url = cached["url"]
     else:
-        url = fetch_link_secure(canal_id)
+        url = fetch_link(canal_id)
     
     if url:
-        # Redirecionamento 302 SEM caracteres especiais (|) para não quebrar o player
         return redirect(url, code=302)
-    
-    return "Offline", 404
+    return "Canal Offline", 404
 
 @app.route('/playlist.m3u')
 def m3u_route():
-    """Gera playlist M3U com Metadados Anti-Travamento"""
+    """Gera a lista M3U. Se a API falhar, retorna a última lista válida (Anti-Erro)"""
     try:
-        r = session.post(f"{ORIGIN}/TV/1.2/?page=viewChannels", 
-                         data={"userHistoric": "[]"}, timeout=12)
+        # URL DA API CORRIGIDA
+        api_url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
+        r = session.post(api_url, data={"userHistoric": "[]"}, timeout=20)
+        content = r.text
         
-        items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", r.text)
-        data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', r.text)
+        items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
+        data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', content)
         
         output = "#EXTM3U\n"
         base_url = request.host_url.rstrip('/')
@@ -137,26 +116,27 @@ def m3u_route():
                 name = re.sub('<[^<]+?>', '', data.get('titulo', data.get('name', 'Canal'))).strip()
                 logo = data.get('img', data.get('poster', ''))
                 
-                output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix PREMIUM V16",{name}\n'
-                
-                # --- INSTRUÇÕES DE ALTA PERFORMANCE (Buffer de 30s) ---
+                output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix Otimizado",{name}\n'
                 output += f'#EXTVLCOPT:network-caching=30000\n'
-                output += f'#EXTVLCOPT:http-user-agent={UA_MILITARY}\n'
-                # Tag JSON Headers para players inteligentes (TiviMate, Smarters)
-                output += f'#EXTHTTP:{{"User-Agent":"{UA_MILITARY}","X-Requested-With":"{APP_PKG}"}}\n'
-                
+                output += f'#EXTHTTP:{{"User-Agent":"{UA_OFFICIAL}","X-Requested-With":"com.megaflix.app"}}\n'
                 output += f"{base_url}/play/{cid}\n"
-            except:
-                continue
+            except: continue
         
-        db["ids"] = new_ids
-        return Response(output, mimetype='text/plain')
-    except:
-        return "Erro", 500
+        if new_ids:
+            db["ids"] = new_ids
+            db["last_playlist"] = output # Salva para caso de erro futuro
+            return Response(output, mimetype='text/plain')
+        
+    except Exception as e:
+        # Se der erro, tenta entregar a última lista que funcionou
+        if db["last_playlist"]:
+            return Response(db["last_playlist"], mimetype='text/plain')
+            
+    return "Erro ao conectar com a API original. Tente novamente em instantes.", 503
 
 @app.route('/')
 def home():
-    return f"V16 ONLINE - Inteligência Ativa"
+    return "Servidor V17 ONLINE - Lista Corrigida"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
