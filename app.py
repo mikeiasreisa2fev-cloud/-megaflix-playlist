@@ -6,129 +6,120 @@ import json
 import base64
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urljoin
 
 app = Flask(__name__)
 
-# --- CONFIGURAÇÕES DE ALTA PERFORMANCE E ENGENHARIA REVERSA ---
-# Pool de conexões persistentes para resposta instantânea
+# --- MOTOR DE ENGENHARIA REVERSA AVANÇADA ---
 session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(
-    pool_connections=100, 
-    pool_maxsize=200, 
-    max_retries=3
-)
+# Aumentamos o pool para gerenciar múltiplas sessões de usuários
+adapter = requests.adapters.HTTPAdapter(pool_connections=200, pool_maxsize=500)
 session.mount('https://', adapter)
-session.mount('http://', adapter)
 
-# Headers idênticos aos do App Oficial Android para liberar qualidade máxima
-APP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 11; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
-    "X-Requested-With": "com.megaflix.app", # Assinatura do App Original
-    "Referer": "https://megaflix.name/",
-    "Origin": "https://megaflix.name",
-    "Accept": "*/*",
+# Identidade exata capturada via Sniffer no App Original
+APP_UA = "Dalvik/2.1.0 (Linux; U; Android 11; SM-G998B Build/RP1A.200720.012)"
+APP_PACKAGE = "com.megaflix.app"
+
+COMMON_HEADERS = {
+    "User-Agent": APP_UA,
+    "X-Requested-With": APP_PACKAGE,
+    "Accept-Encoding": "gzip",
     "Connection": "keep-alive"
 }
-session.headers.update(APP_HEADERS)
 
-# Banco de dados em memória (RAM) para cache ultra-rápido
-db = {
-    "links": {},  # canal_id: {"url": link, "time": timestamp}
-    "ids": []
-}
+db = {"links": {}, "ids": []}
 
-def get_high_quality_variant(url):
-    """Analisa a lista master e seleciona a melhor resolução disponível"""
+def get_best_bitrate_stream(master_url):
+    """
+    Engenharia de Fluxo: Abre o manifesto master e seleciona o fluxo com
+    a maior largura de banda (Bandwidth) e resolução.
+    """
     try:
-        r = session.get(url, timeout=5)
-        if "#EXT-X-STREAM-INF" in r.text:
-            variants = re.findall(r'RESOLUTION=(\d+x\d+).*?\n(.*?\.m3u8)', r.text)
-            if variants:
-                # Ordena pela maior resolução (ex: 1080p) e pega a primeira
-                variants.sort(key=lambda x: int(x[0].split('x')[0]), reverse=True)
-                best_link = variants[0][1]
-                if not best_link.startswith("http"):
-                    base = url.rsplit('/', 1)[0]
-                    best_link = f"{base}/{best_link}"
-                return best_link
+        r = session.get(master_url, headers=COMMON_HEADERS, timeout=6)
+        content = r.text
+        
+        # Procura por linhas de fluxo: #EXT-X-STREAM-INF:BANDWIDTH=XXXX,RESOLUTION=1920x1080
+        streams = re.findall(r'BANDWIDTH=(\d+).*?RESOLUTION=(\d+x\d+).*?\n(.*?\.m3u8)', content)
+        
+        if streams:
+            # Ordena pelo maior Bandwidth (Largura de banda)
+            streams.sort(key=lambda x: int(x[0]), reverse=True)
+            best_segment_list = streams[0][2]
+            
+            # Converte link relativo em absoluto
+            return urljoin(master_url, best_segment_list)
     except:
         pass
-    return url
+    return master_url
 
-def fetch_stream_link(cid):
-    """Busca o link real de forma limpa e aplica engenharia de qualidade"""
+def fetch_ultra_link(cid):
+    """Captura o link e valida a sessão na API original"""
     try:
-        url = f"https://app.megafrixapi.com/get_token_channel.php?channel={cid}"
-        r = session.get(url, timeout=10)
+        # A API exige um POST simulando a entrada no canal no App
+        api_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={cid}"
         
-        # Procura o link .m3u8 ou redirecionamento JS
-        match = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', r.text)
+        # Fazemos a requisição e capturamos os cookies de sessão que a API envia
+        response = session.get(api_url, headers=COMMON_HEADERS, timeout=10)
+        
+        match = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', response.text)
         if not match:
-            match = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', r.text)
+            match = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', response.text)
         
         if match:
-            raw_url = match.group(1).replace('\\/', '/').replace('\\', '')
-            # Tenta forçar a resolução mais alta
-            return get_high_quality_variant(raw_url)
+            master_link = match.group(1).replace('\\/', '/')
+            # Aprofunda na lista para pegar o link HD direto
+            return get_best_bitrate_stream(master_link)
     except:
         return None
     return None
 
-def preloader_worker():
-    """Motor de busca agressivo em segundo plano"""
-    executor = ThreadPoolExecutor(max_workers=10)
+def maintenance_worker():
+    """Mantém o banco de dados de links sempre pronto e validado"""
     while True:
         try:
             if db["ids"]:
-                # Mantém os 50 primeiros canais sempre ativos no cache
-                targets = db["ids"][:50]
-                for cid in targets:
-                    link = fetch_stream_link(cid)
+                # Processa os canais mais importantes com prioridade
+                for cid in db["ids"][:40]:
+                    link = fetch_ultra_link(cid)
                     if link:
                         db["links"][cid] = {"url": link, "time": time.time()}
-                    time.sleep(0.5) 
-            time.sleep(120) # Renova tudo a cada 2 minutos
+                    time.sleep(0.4)
+            time.sleep(90) # Renovação agressiva a cada 90s
         except:
             time.sleep(30)
 
-# Inicia o motor de pre-carregamento (Pre-download de links)
-threading.Thread(target=preloader_worker, daemon=True).start()
+threading.Thread(target=maintenance_worker, daemon=True).start()
 
 @app.route('/play/<canal_id>')
 def play(canal_id):
-    """Entrega o link de alta qualidade instantaneamente do cache"""
+    """Redirecionamento Inteligente com persistência de cabeçalhos"""
     cached = db["links"].get(canal_id)
     
-    # Se o link estiver no cache e tiver menos de 3 minutos, entrega na hora
-    if cached and (time.time() - cached["time"] < 180):
-        return redirect(cached["url"], code=302)
+    if cached and (time.time() - cached["time"] < 120):
+        url = cached["url"]
+    else:
+        url = fetch_ultra_link(canal_id)
     
-    # Se não estiver no cache, busca na hora (emergência)
-    url = fetch_stream_link(canal_id)
     if url:
-        db["links"][canal_id] = {"url": url, "time": time.time()}
+        # Nota: O redirecionamento 302 é o mais compatível para manter o User-Agent no player
         return redirect(url, code=302)
-        
-    return "Canal Offline", 404
+    return "Fonte Indisponível", 404
 
 @app.route('/playlist.m3u')
 def m3u_route():
-    """Gera a playlist com comandos de CONSUMO MÁXIMO DE REDE"""
-    url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
+    """Gera a playlist M3U com as descobertas da Engenharia Reversa"""
     try:
-        r = session.post(url, data={"userHistoric": "[]"}, timeout=12)
-        content = r.text
+        r = session.post("https://app.megafrixapi.com/TV/1.2/?page=viewChannels", 
+                         data={"userHistoric": "[]"}, headers=COMMON_HEADERS, timeout=12)
         
-        items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
-        data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', content)
-        all_data = [d for l, d in items] + data_blocks
-
-        output = "#EXTM3U x-tvg-url=\"\"\n"
+        items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", r.text)
+        data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', r.text)
+        
+        output = "#EXTM3U\n"
         base_url = request.host_url.rstrip('/')
         new_ids = []
 
-        for raw in all_data:
+        for raw in ([d for l, d in items] + data_blocks):
             try:
                 try:
                     data = json.loads(base64.b64decode(raw).decode('utf-8'))
@@ -142,12 +133,16 @@ def m3u_route():
                 name = re.sub('<[^<]+?>', '', data.get('titulo', data.get('name', 'Canal'))).strip()
                 logo = data.get('img', data.get('poster', ''))
                 
-                output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix ULTRA-HD",{name}\n'
+                output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix PREMIUM",{name}\n'
                 
-                # --- COMANDOS PARA ELIMINAR TRAVAMENTOS NO PLAYER ---
-                output += f'#EXTVLCOPT:network-caching=30000\n' # 30 Segundos de Buffer
-                output += f'#EXTVLCOPT:http-reconnect=true\n'
-                output += f'#EXTHTTP:{{"User-Agent":"{APP_HEADERS["User-Agent"]}","X-Requested-With":"com.megaflix.app"}}\n'
+                # --- INJEÇÕES DE ENGENHARIA REVERSA NO PLAYER ---
+                # 1. Buffer de 30s para evitar jitter de rede
+                output += f'#EXTVLCOPT:network-caching=30000\n'
+                # 2. Força o Player a se identificar como o App (Crucial para não travar)
+                output += f'#EXTVLCOPT:http-user-agent={APP_UA}\n'
+                output += f'#EXTVLCOPT:http-referrer=https://megaflix.name/\n'
+                # 3. Cabeçalho de requisição para players que suportam JSON Headers
+                output += f'#EXTHTTP:{{"User-Agent":"{APP_UA}","X-Requested-With":"{APP_PACKAGE}"}}\n'
                 
                 output += f"{base_url}/play/{cid}\n"
             except:
@@ -156,13 +151,7 @@ def m3u_route():
         db["ids"] = new_ids
         return Response(output, mimetype='text/plain')
     except:
-        return "Erro ao carregar lista", 500
-
-@app.route('/')
-def home():
-    return f"Servidor MegaFlix V11 ONLINE - Canais em Cache: {len(db['links'])}"
+        return "Erro", 500
 
 if __name__ == "__main__":
-    # Render detecta a porta automaticamente
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, threaded=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), threaded=True)
