@@ -10,99 +10,100 @@ from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
-# --- MOTOR DE ALTA PERFORMANCE ---
-# Sessão com máximo de conexões simultâneas permitidas
+# --- CONFIGURAÇÕES DE ULTRA PERFORMANCE E CONSUMO DE REDE ---
+# Aumentamos o pool ao limite para garantir que nenhuma requisição fique na fila
 session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(
-    pool_connections=100, 
-    pool_maxsize=200, 
+    pool_connections=200, 
+    pool_maxsize=300, 
     max_retries=3
 )
 session.mount('https://', adapter)
 session.mount('http://', adapter)
 
-UA_PREMIUM = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+# User-Agent Premium
+UA_MOBILE = "Mozilla/5.0 (Linux; Android 11; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
 HEADERS = {
-    "User-Agent": UA_PREMIUM,
+    "User-Agent": UA_MOBILE,
     "Referer": "https://megaflix.name/",
     "Origin": "https://megaflix.name",
-    "Connection": "keep-alive"
+    "Accept": "*/*",
+    "Connection": "keep-alive" # Mantém a rede aberta
 }
 session.headers.update(HEADERS)
 
-# Banco de dados em RAM para resposta em milissegundos
-db = {"links": {}, "ids": [], "playlist": ""}
+db = {
+    "playlist": "",
+    "links": {},  
+    "ids": []
+}
 
-def fetch_and_cache(cid):
-    """Busca o link e guarda no cache de ultra velocidade"""
+def fetch_stream_link(cid):
+    """Busca o link real de forma ultra-rápida com limpeza de barras"""
     try:
         url = f"https://app.megafrixapi.com/get_token_channel.php?channel={cid}"
-        # Timeout curto para não travar a fila
-        r = session.get(url, timeout=5)
+        # Timeout otimizado para não travar o processo
+        r = session.get(url, timeout=6)
         match = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', r.text)
         if not match:
             match = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', r.text)
         
         if match:
-            clean_url = match.group(1).replace('\\/', '/')
-            db["links"][cid] = {"url": clean_url, "time": time.time()}
-            return True
+            return match.group(1).replace('\\/', '/')
     except:
-        pass
-    return False
+        return None
+    return None
 
-def ultra_preloader():
-    """Motor que mantém TODOS os links prontos o tempo todo"""
-    executor = ThreadPoolExecutor(max_workers=15)
+def preloader_worker():
+    """Motor de busca agressivo: Mantém os links sempre prontos"""
+    # Usamos ThreadPool para buscar vários links simultaneamente, acelerando o pre-load
+    executor = ThreadPoolExecutor(max_workers=10)
     while True:
         try:
             if db["ids"]:
-                # Processa múltiplos canais ao mesmo tempo para máxima velocidade
-                executor.map(fetch_and_cache, db["ids"][:50])
-            # Renova tudo a cada 2 minutos (120s)
-            time.sleep(120)
+                targets = db["ids"][:50]
+                executor.map(lambda cid: db["links"].update({cid: {"url": fetch_stream_link(cid), "time": time.time()}} if fetch_stream_link(cid) else {}), targets)
+            
+            # Renovação a cada 2 minutos para manter o token 'vivo'
+            time.sleep(120) 
         except:
-            time.sleep(10)
+            time.sleep(30)
 
-# Inicia o motor de busca agressiva
-threading.Thread(target=ultra_preloader, daemon=True).start()
+# Inicia o motor em segundo plano
+threading.Thread(target=preloader_worker, daemon=True).start()
 
 @app.route('/play/<canal_id>')
 def play(canal_id):
-    """Entrega instantânea. O link já estará pronto no cache."""
+    """Entrega o link instantaneamente do cache"""
     cached = db["links"].get(canal_id)
     
-    # Se estiver no cache, entrega em 0.001s
-    if cached and (time.time() - cached["time"] < 180):
+    if cached and cached.get("url") and (time.time() - cached["time"] < 180):
         return redirect(cached["url"], code=302)
     
-    # Se falhar o cache, busca na hora (emergência)
-    url = f"https://app.megafrixapi.com/get_token_channel.php?channel={canal_id}"
-    try:
-        r = session.get(url, timeout=8)
-        match = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', r.text)
-        if match:
-            return redirect(match.group(1).replace('\\/', '/'), code=302)
-    except:
-        pass
+    link = fetch_stream_link(canal_id)
+    if link:
+        db["links"][canal_id] = {"url": link, "time": time.time()}
+        return redirect(link, code=302)
         
-    return "Link Expirado ou Offline", 404
+    return "Offline", 404
 
 @app.route('/playlist.m3u')
 def m3u_route():
-    """Gera playlist com comandos de CONSUMO MÁXIMO DE REDE"""
+    """Gera a playlist com comandos de CONSUMO MÁXIMO DE REDE"""
+    url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
     try:
-        r = session.post("https://app.megafrixapi.com/TV/1.2/?page=viewChannels", 
-                         data={"userHistoric": "[]"}, timeout=10)
+        r = session.post(url, data={"userHistoric": "[]"}, timeout=12)
         content = r.text
+        
         items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
         data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', content)
-        
+        all_data = [d for l, d in items] + data_blocks
+
         output = "#EXTM3U\n"
         base_url = request.host_url.rstrip('/')
         new_ids = []
 
-        for raw in ([d for l, d in items] + data_blocks):
+        for raw in all_data:
             try:
                 try:
                     data = json.loads(base64.b64decode(raw).decode('utf-8'))
@@ -111,21 +112,24 @@ def m3u_route():
                 
                 cid = data.get('id')
                 if not cid: continue
-                new_ids.append(cid)
                 
                 name = re.sub('<[^<]+?>', '', data.get('titulo', data.get('name', 'Canal'))).strip()
                 logo = data.get('img', data.get('poster', ''))
                 
+                new_ids.append(cid)
                 output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix TURBO",{name}\n'
                 
-                # --- COMANDOS DE CONSUMO DE REDE AO MÁXIMO ---
-                # Aumenta o cache para 30 segundos (Elimina travas de oscilação)
+                # --- COMANDOS DE CONSUMO MÁXIMO DE REDE ---
+                # Aumenta o cache de rede para 30 segundos (Elimina travas de oscilação da fonte)
                 output += f'#EXTVLCOPT:network-caching=30000\n' 
-                # Força o player a manter a conexão aberta
+                # Força o player a reconectar automaticamente se a rede falhar
                 output += f'#EXTVLCOPT:http-reconnect=true\n'
-                # Define o número de threads de decodificação no máximo
+                # Aumenta a tolerância de jitter (instabilidade) do relógio do vídeo
+                output += f'#EXTVLCOPT:clock-jitter=5000\n'
+                # Usa o máximo de threads do dispositivo para decodificar o vídeo
                 output += f'#EXTVLCOPT:ffmpeg-threads=4\n'
                 
+                output += f'#EXTHTTP:{{"User-Agent":"{UA_MOBILE}"}}\n'
                 output += f"{base_url}/play/{cid}\n"
             except:
                 continue
@@ -133,7 +137,11 @@ def m3u_route():
         db["ids"] = new_ids
         return Response(output, mimetype='text/plain')
     except:
-        return "Erro", 500
+        return "Erro na API", 500
+
+@app.route('/')
+def status():
+    return f"Servidor V5 ULTRA ONLINE. Canais em Cache: {len(db['links'])}"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
