@@ -11,7 +11,7 @@ app = Flask(__name__)
 
 # --- CONFIGURAÇÃO DE ALTA PERFORMANCE ---
 
-# Sessão com pool de conexões e política de retentativas
+# Sessão com pool de conexões para resposta rápida
 session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=50)
 session.mount('https://', adapter)
@@ -25,7 +25,7 @@ HEADERS = {
 }
 session.headers.update(HEADERS)
 
-# Cache da Playlist (Reduzido para 5 min para garantir links mais novos)
+# Cache da Playlist (5 min)
 cache_data = {"playlist": None, "expiry": 0}
 
 def get_channels():
@@ -33,11 +33,10 @@ def get_channels():
         return cache_data["playlist"]
 
     url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
-    # Adicionamos propriedades que players profissionais (como IPTV Smarters ou OTT) usam para buffer
     playlist = "#EXTM3U x-tvg-url=\"\"\n"
     
     try:
-        response = session.post(url, data={"userHistoric": "[]"}, timeout=10)
+        response = session.post(url, data={"userHistoric": "[]"}, timeout=12)
         content = response.text
 
         items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
@@ -66,9 +65,9 @@ def get_channels():
 
                 stream_link = f"{my_url}/play/{cid}"
                 
-                # Otimização M3U: Força o player a usar o User-Agent correto e aumenta o cache de rede
+                # Tags de Buffer e Header para o Player
                 playlist += f'#EXTINF:-1 tvg-logo="{logo}" group-title="{group}",{name}\n'
-                playlist += f'#EXTVLCOPT:network-caching=5000\n' # 5 segundos de buffer no VLC
+                playlist += f'#EXTVLCOPT:network-caching=10000\n' # 10 segundos de buffer para evitar travas
                 playlist += f'#EXTHTTP:{{"User-Agent":"{HEADERS["User-Agent"]}"}}\n'
                 playlist += f"{stream_link}\n"
             except:
@@ -82,31 +81,33 @@ def get_channels():
     except:
         return cache_data["playlist"] or "#EXTM3U\n# Erro ao carregar"
 
-# Cache de link de streaming muito curto (60s) 
-# Isso evita que você use um token que já expirou, causa principal dos travamentos
+# Cache de link de streaming (60s) para renovar tokens expirados
 @lru_cache(maxsize=100)
 def get_stream_url(canal_id, timestamp):
     try:
         ext_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={canal_id}"
-        r = session.get(ext_url, timeout=8)
+        r = session.get(ext_url, timeout=10)
         
+        # Busca m3u8 e limpa barras invertidas que quebram o link
         m3u8 = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', r.text)
-        if m3u8: return m3u8.group(1)
+        if m3u8: 
+            return m3u8.group(1).replace('\\/', '/')
         
         js = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', r.text)
-        if js: return js.group(1)
+        if js: 
+            return js.group(1).replace('\\/', '/')
     except:
         pass
     return None
 
 @app.route('/play/<canal_id>')
 def play(canal_id):
-    # Usamos o minuto atual para o cache, assim o link é renovado a cada 60 segundos
+    # Gera um timestamp por minuto para renovar o cache
     timestamp = int(time.time() / 60) 
     url_final = get_stream_url(canal_id, timestamp)
     
     if url_final:
-        # Redireciona com código 302 (temporário) para o player não salvar o link expirado
+        # Redirecionamento 302 para garantir que o player peça um novo link se este falhar
         return redirect(url_final, code=302)
     return "Offline", 404
 
@@ -116,7 +117,8 @@ def m3u_route():
 
 @app.route('/')
 def home():
-    return "Sistema Ativo - Use /playlist.m3u no seu player"
+    return "Sistema MegaFlix Ativo"
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
