@@ -5,127 +5,110 @@ import os
 import json
 import base64
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
-# Configurações de Elite
-executor = ThreadPoolExecutor(max_workers=10)
+# 1. Sessão Global (Mantém a conexão aberta, acelerando muito o tempo de resposta)
 session = requests.Session()
-
-# Lista de User-Agents rotativos para evitar bloqueios
-UA_ANDROID = "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36"
-
-# Cache Inteligente
-cache = {
-    "playlist": None,
-    "playlist_time": 0,
-    "streams": {}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://megaflix.name/",
+    "Origin": "https://megaflix.name",
+    "X-Requested-With": "XMLHttpRequest"
 }
+session.headers.update(HEADERS)
 
-def get_headers(extra_referer=None):
-    h = {
-        "User-Agent": UA_ANDROID,
-        "Accept-Encoding": "gzip, deflate",
-        "Connection": "keep-alive",
-        "Origin": "https://megaflix.name",
-        "Referer": extra_referer or "https://megaflix.name/"
-    }
-    return h
+# Cache de Playlist para não sobrecarregar o Render
+cache_playlist = {"data": None, "expires": 0}
 
-@app.route('/play/<canal_id>')
-def play(canal_id):
-    """
-    Rota de redirecionamento inteligente. 
-    Tenta obter o link com retry automático se falhar.
-    """
-    def fetch_link():
-        try:
-            # Passo 1: Obter o token
-            token_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={canal_id}"
-            r = session.get(token_url, headers=get_headers(), timeout=7)
-            
-            # Passo 2: Extração agressiva (procura m3u8 ou links diretos)
-            link = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', r.text)
-            if not link:
-                link = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', r.text)
-            
-            if link:
-                return link.group(1).replace('\\/', '/')
-        except:
-            return None
-        return None
-
-    # Tenta obter o link (até 2 tentativas rápidas)
-    stream_url = fetch_link() or fetch_link()
-    
-    if stream_url:
-        # A MÁGICA: Adicionamos os headers diretamente na URL para players que suportam (VLC/MX/OTT)
-        # Se o player não suportar, ele ignora o resto, mas se suportar, o travamento para.
-        if ".m3u8" in stream_url:
-            separator = "|" if "|" not in stream_url else "&"
-            stream_url += f"{separator}User-Agent={UA_ANDROID}&Referer=https://megaflix.name/"
-        
-        return redirect(stream_url, code=302)
-    
-    return "Erro: Fonte Offline", 404
-
-@app.route('/playlist.m3u')
-def m3u_route():
-    # Cache da playlist por 15 minutos para economizar processador no Render
-    if cache["playlist"] and (time.time() - cache["playlist_time"] < 900):
-        return Response(cache["playlist"], mimetype='text/plain')
+def get_channels():
+    if cache_playlist["data"] and time.time() < cache_playlist["expires"]:
+        return cache_playlist["data"]
 
     url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
+    playlist = "#EXTM3U\n"
+    
     try:
-        r = session.post(url, data={"userHistoric": "[]"}, headers=get_headers(), timeout=10)
-        content = r.text
-        
-        # Regex de alta performance
+        # Timeout curto para evitar travamento do worker
+        response = session.post(url, data={"userHistoric": "[]"}, timeout=15)
+        content = response.text
+
+        # Extração de dados
         items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
         data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', content)
         
-        all_found = []
-        for l, d in items: all_found.append(d)
-        for d in data_blocks: all_found.append(d)
+        all_found = [{"link": l, "data": d} for l, d in items]
+        all_found += [{"link": "", "data": d} for d in data_blocks]
 
-        output = "#EXTM3U\n"
-        base_url = request.host_url.rstrip('/')
+        my_url = request.host_url.rstrip('/')
 
-        for raw in all_found:
+        for item in all_found:
             try:
-                # Decodificação rápida
+                raw = item['data']
                 try:
-                    data = json.loads(base64.b64decode(raw).decode('utf-8'))
+                    # Tenta B64
+                    decoded = base64.b64decode(raw).decode('utf-8')
+                    data = json.loads(decoded)
                 except:
+                    # Tenta JSON Direto
                     data = json.loads(raw.replace('\\"', '"'))
                 
                 cid = data.get('id')
                 if not cid: continue
                 
-                name = data.get('titulo', data.get('name', 'Canal'))
+                name = re.sub('<[^<]+?>', '', data.get('titulo', data.get('name', 'Canal'))).strip()
                 logo = data.get('img', data.get('poster', ''))
-                
-                # Adicionamos tags de buffer pesado aqui
-                output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix", {name}\n'
-                output += f'#EXTVLCOPT:http-user-agent={UA_ANDROID}\n'
-                output += f'#EXTVLCOPT:http-referrer=https://megaflix.name/\n'
-                output += f'#EXTVLCOPT:network-caching=8000\n'
-                output += f"{base_url}/play/{cid}\n"
+                group = data.get('genre', 'MegaFlix')
+
+                stream_link = f"{my_url}/play/{cid}"
+                playlist += f'#EXTINF:-1 tvg-logo="{logo}" group-title="{group}",{name}\n{stream_link}\n'
             except:
                 continue
 
-        cache["playlist"] = output
-        cache["playlist_time"] = time.time()
-        return Response(output, mimetype='text/plain')
-    except:
-        return "Erro ao gerar lista", 500
+        if playlist != "#EXTM3U\n":
+            cache_playlist["data"] = playlist
+            cache_playlist["expires"] = time.time() + 600 # Cache de 10 min
+
+        return playlist
+    except Exception as e:
+        return cache_playlist["data"] or f"#EXTM3U\n# Erro: {str(e)}"
+
+@app.route('/play/<canal_id>')
+def play(canal_id):
+    """
+    Obtém o link real no momento do clique. 
+    Removido sufixos extras para garantir que todos os players abram.
+    """
+    try:
+        ext_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={canal_id}"
+        # Aumentamos o timeout para garantir que o link seja pego
+        r = session.get(ext_url, timeout=12)
+        
+        # Procura o link .m3u8 (limpa escapes de barra)
+        m3u8 = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', r.text)
+        if m3u8:
+            clean_url = m3u8.group(1).replace('\\/', '/')
+            return redirect(clean_url)
+        
+        # Fallback para redirect via JS
+        js = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', r.text)
+        if js:
+            clean_url = js.group(1).replace('\\/', '/')
+            return redirect(clean_url)
+            
+        return "Canal não encontrado no servidor original", 404
+    except Exception as e:
+        return f"Erro ao processar: {str(e)}", 500
+
+@app.route('/playlist.m3u')
+def m3u_route():
+    return Response(get_channels(), mimetype='text/plain')
 
 @app.route('/')
-def health():
-    return "ONLINE - V3 ULTRA", 200
+def home():
+    return "Servidor MegaFlix Online - Use /playlist.m3u"
 
 if __name__ == "__main__":
-    # Render usa a porta da variável de ambiente PORT
+    # Render detecta automaticamente a porta
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, threaded=True)
+    app.run(host='0.0.0.0', port=port)
