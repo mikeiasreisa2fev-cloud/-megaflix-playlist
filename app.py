@@ -5,118 +5,127 @@ import os
 import json
 import base64
 import time
-from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
-# --- CONFIGURAÇÃO DE ALTA PERFORMANCE ---
-
-# Sessão com pool de conexões e política de retentativas
+# Configurações de Elite
+executor = ThreadPoolExecutor(max_workers=10)
 session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=50)
-session.mount('https://', adapter)
-session.mount('http://', adapter)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.162 Mobile Safari/537.36",
-    "Referer": "https://megaflix.name/",
-    "Origin": "https://megaflix.name",
-    "Accept": "*/*"
+# Lista de User-Agents rotativos para evitar bloqueios
+UA_ANDROID = "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.91 Mobile Safari/537.36"
+
+# Cache Inteligente
+cache = {
+    "playlist": None,
+    "playlist_time": 0,
+    "streams": {}
 }
-session.headers.update(HEADERS)
 
-# Cache da Playlist (Reduzido para 5 min para garantir links mais novos)
-cache_data = {"playlist": None, "expiry": 0}
+def get_headers(extra_referer=None):
+    h = {
+        "User-Agent": UA_ANDROID,
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+        "Origin": "https://megaflix.name",
+        "Referer": extra_referer or "https://megaflix.name/"
+    }
+    return h
 
-def get_channels():
-    if cache_data["playlist"] and time.time() < cache_data["expiry"]:
-        return cache_data["playlist"]
+@app.route('/play/<canal_id>')
+def play(canal_id):
+    """
+    Rota de redirecionamento inteligente. 
+    Tenta obter o link com retry automático se falhar.
+    """
+    def fetch_link():
+        try:
+            # Passo 1: Obter o token
+            token_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={canal_id}"
+            r = session.get(token_url, headers=get_headers(), timeout=7)
+            
+            # Passo 2: Extração agressiva (procura m3u8 ou links diretos)
+            link = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', r.text)
+            if not link:
+                link = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', r.text)
+            
+            if link:
+                return link.group(1).replace('\\/', '/')
+        except:
+            return None
+        return None
+
+    # Tenta obter o link (até 2 tentativas rápidas)
+    stream_url = fetch_link() or fetch_link()
+    
+    if stream_url:
+        # A MÁGICA: Adicionamos os headers diretamente na URL para players que suportam (VLC/MX/OTT)
+        # Se o player não suportar, ele ignora o resto, mas se suportar, o travamento para.
+        if ".m3u8" in stream_url:
+            separator = "|" if "|" not in stream_url else "&"
+            stream_url += f"{separator}User-Agent={UA_ANDROID}&Referer=https://megaflix.name/"
+        
+        return redirect(stream_url, code=302)
+    
+    return "Erro: Fonte Offline", 404
+
+@app.route('/playlist.m3u')
+def m3u_route():
+    # Cache da playlist por 15 minutos para economizar processador no Render
+    if cache["playlist"] and (time.time() - cache["playlist_time"] < 900):
+        return Response(cache["playlist"], mimetype='text/plain')
 
     url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
-    # Adicionamos propriedades que players profissionais (como IPTV Smarters ou OTT) usam para buffer
-    playlist = "#EXTM3U x-tvg-url=\"\"\n"
-    
     try:
-        response = session.post(url, data={"userHistoric": "[]"}, timeout=10)
-        content = response.text
-
+        r = session.post(url, data={"userHistoric": "[]"}, headers=get_headers(), timeout=10)
+        content = r.text
+        
+        # Regex de alta performance
         items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
         data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', content)
         
-        all_found = [{"link": l, "data": d} for l, d in items]
-        all_found += [{"link": "", "data": d} for d in data_blocks]
+        all_found = []
+        for l, d in items: all_found.append(d)
+        for d in data_blocks: all_found.append(d)
 
-        my_url = request.host_url.rstrip('/')
+        output = "#EXTM3U\n"
+        base_url = request.host_url.rstrip('/')
 
-        for item in all_found:
+        for raw in all_found:
             try:
-                raw = item['data']
+                # Decodificação rápida
                 try:
-                    decoded = base64.b64decode(raw).decode('utf-8')
-                    data = json.loads(decoded)
+                    data = json.loads(base64.b64decode(raw).decode('utf-8'))
                 except:
-                    data = json.loads(raw.replace('\\"', '"').replace("\\'", "'"))
+                    data = json.loads(raw.replace('\\"', '"'))
                 
                 cid = data.get('id')
                 if not cid: continue
                 
-                name = re.sub('<[^<]+?>', '', data.get('titulo', data.get('name', 'Canal'))).strip()
+                name = data.get('titulo', data.get('name', 'Canal'))
                 logo = data.get('img', data.get('poster', ''))
-                group = data.get('genre', 'MegaFlix')
-
-                stream_link = f"{my_url}/play/{cid}"
                 
-                # Otimização M3U: Força o player a usar o User-Agent correto e aumenta o cache de rede
-                playlist += f'#EXTINF:-1 tvg-logo="{logo}" group-title="{group}",{name}\n'
-                playlist += f'#EXTVLCOPT:network-caching=5000\n' # 5 segundos de buffer no VLC
-                playlist += f'#EXTHTTP:{{"User-Agent":"{HEADERS["User-Agent"]}"}}\n'
-                playlist += f"{stream_link}\n"
+                # Adicionamos tags de buffer pesado aqui
+                output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix", {name}\n'
+                output += f'#EXTVLCOPT:http-user-agent={UA_ANDROID}\n'
+                output += f'#EXTVLCOPT:http-referrer=https://megaflix.name/\n'
+                output += f'#EXTVLCOPT:network-caching=8000\n'
+                output += f"{base_url}/play/{cid}\n"
             except:
                 continue
 
-        if playlist != "#EXTM3U x-tvg-url=\"\"\n":
-            cache_data["playlist"] = playlist
-            cache_data["expiry"] = time.time() + 300
-
-        return playlist
+        cache["playlist"] = output
+        cache["playlist_time"] = time.time()
+        return Response(output, mimetype='text/plain')
     except:
-        return cache_data["playlist"] or "#EXTM3U\n# Erro ao carregar"
-
-# Cache de link de streaming muito curto (60s) 
-# Isso evita que você use um token que já expirou, causa principal dos travamentos
-@lru_cache(maxsize=100)
-def get_stream_url(canal_id, timestamp):
-    try:
-        ext_url = f"https://app.megafrixapi.com/get_token_channel.php?channel={canal_id}"
-        r = session.get(ext_url, timeout=8)
-        
-        m3u8 = re.search(r'["\'](https?://[^"\']+\.m3u8[^"\']*)["\']', r.text)
-        if m3u8: return m3u8.group(1)
-        
-        js = re.search(r'window\.location\.href\s*=\s*["\']([^"\']+)["\']', r.text)
-        if js: return js.group(1)
-    except:
-        pass
-    return None
-
-@app.route('/play/<canal_id>')
-def play(canal_id):
-    # Usamos o minuto atual para o cache, assim o link é renovado a cada 60 segundos
-    timestamp = int(time.time() / 60) 
-    url_final = get_stream_url(canal_id, timestamp)
-    
-    if url_final:
-        # Redireciona com código 302 (temporário) para o player não salvar o link expirado
-        return redirect(url_final, code=302)
-    return "Offline", 404
-
-@app.route('/playlist.m3u')
-def m3u_route():
-    return Response(get_channels(), mimetype='text/plain')
+        return "Erro ao gerar lista", 500
 
 @app.route('/')
-def home():
-    return "Sistema Ativo - Use /playlist.m3u no seu player"
+def health():
+    return "ONLINE - V3 ULTRA", 200
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
+    # Render usa a porta da variável de ambiente PORT
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, threaded=True)
