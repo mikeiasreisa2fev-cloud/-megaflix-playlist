@@ -27,8 +27,10 @@ session.headers.update(HEADERS)
 
 db = {"links": {}, "ids": [], "last_playlist": ""}
 
-# --- NOVA LISTA MANUAL [S2] SUBSTITUÍDA E CORRIGIDA ---
+# --- LISTA MANUAL [S2] ATUALIZADA (V19.1) ---
 MANUAL_CHANNELS = [
+    ("NICKONLINE [S2]", "https://x1colegal.com/"),
+    ("NICKTOONS [S2]", "https://stmv2.srvif.com/nicktoons/nicktoons/playlist.m3u8"),
     ("GLOBO NEWS [S2]", "http://177.52.24.163/GLOBO-NEWS-HD/index.m3u8"),
     ("GLOBO RJ [S2]", "http://138.255.2.6:8084/GLOBOHD/index.m3u8"),
     ("GLOBO MG [S2]", "http://189.76.71.35:8555/live/cdn_stonetv/cdn_stonetv/1132.m3u8"),
@@ -204,7 +206,7 @@ def m3u_route():
 
 @app.route('/')
 def home():
-    return "Servidor V19 Ultimate Hybrid ONLINE - Lista [S2] Atualizada"
+    return "Servidor V19.1 Híbrido ONLINE - NICKTOONS Adicionado"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
