@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 # --- CONFIGURAÇÕES DE PERFORMANCE MÁXIMA ---
 session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(pool_connections=150, pool_maxsize=300, max_retries=5)
+adapter = requests.adapters.HTTPAdapter(pool_connections=200, pool_maxsize=500, max_retries=5)
 session.mount('https://', adapter)
 
 UA_OFFICIAL = "Mozilla/5.0 (Linux; Android 11; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36"
@@ -27,9 +27,8 @@ session.headers.update(HEADERS)
 
 db = {"links": {}, "ids": [], "last_playlist": ""}
 
-# --- LISTA MANUAL [S2] ATUALIZADA ---
+# --- NOVA LISTA MANUAL [S2] SUBSTITUÍDA E CORRIGIDA ---
 MANUAL_CHANNELS = [
-    ("CAZE TV [S2]", "http://177.52.24.163/CAZE-TV/index.m3u8"),
     ("GLOBO NEWS [S2]", "http://177.52.24.163/GLOBO-NEWS-HD/index.m3u8"),
     ("GLOBO RJ [S2]", "http://138.255.2.6:8084/GLOBOHD/index.m3u8"),
     ("GLOBO MG [S2]", "http://189.76.71.35:8555/live/cdn_stonetv/cdn_stonetv/1132.m3u8"),
@@ -40,6 +39,10 @@ MANUAL_CHANNELS = [
     ("TV CULTURA [S2]", "http://138.255.2.6:8084/CULTURA/index.m3u8"),
     ("RECORD NEWS [S2]", "http://138.255.2.6:8084/RECORDNEWS/index.m3u8"),
     ("CNN BRASIL [S2]", "http://138.255.2.6:8084/CNNBRASIL/index.m3u8"),
+    ("CARTOONITO [S2]", "http://45.190.28.50/BOOMERANG_HD/index.m3u8"),
+    ("CARTOON NETWORK [S2]", "http://45.190.28.50/CARTOON_HD/index.m3u8"),
+    ("DISCOVERY KIDS [S2]", "http://45.190.28.50/DISCOVERY_KIDS_HD/index.m3u8"),
+    ("ADULT SWIM [S2]", "http://45.190.28.50/TRUTV_HD/index.m3u8"),
     ("GLOBINHO [S2]", "http://177.52.24.163/GLOOBINHO-HD/index.m3u8"),
     ("PREMIERE 1 [S2]", "http://177.52.24.163/PREMIERE-1-HD/index.m3u8"),
     ("PREMIERE 2 [S2]", "http://177.52.24.163/PREMIERE-2-HD/index.m3u8"),
@@ -51,26 +54,44 @@ MANUAL_CHANNELS = [
     ("SPORT TV 2 [S2]", "http://177.52.24.163/SPORTV-2-HD/index.m3u8"),
     ("SPORT TV 3 [S2]", "http://177.52.24.163/SPORTV-3-HD/index.m3u8"),
     ("ESPN 1 [S2]", "http://177.52.24.163/ESPN-1-HD/index.m3u8"),
+    ("ESPN 1 (ALT) [S2]", "http://45.190.28.50/ESPN_HD/index.m3u8"),
     ("ESPN 2 [S2]", "http://177.52.24.163/ESPN-2-HD/index.m3u8"),
+    ("ESPN 2 (ALT) [S2]", "http://45.190.28.50/ESPN2_HD/index.m3u8"),
     ("ESPN 3 [S2]", "http://177.52.24.163/ESPN-3-HD/index.m3u8"),
+    ("ESPN 3 (ALT) [S2]", "http://45.190.28.50/ESPN3_HD/index.m3u8"),
     ("ESPN 4 [S2]", "http://177.52.24.163/ESPN-4-HD/index.m3u8"),
+    ("ESPN 4 (ALT) [S2]", "http://45.190.28.50/ESPN4_HD/index.m3u8"),
     ("ESPN 5 [S2]", "http://177.52.24.163/ESPN-5-HD/index.m3u8"),
+    ("ESPN 5 (ALT) [S2]", "http://45.190.28.50/ESPN5/index.m3u8"),
+    ("ESPN 6 [S2]", "http://45.190.28.50/ESPN_EXTRA_HD/index.m3u8"),
     ("SPORTYNET 1 [S2]", "http://177.52.24.163/SPORTYNET-1-HD/index.m3u8"),
     ("SPORTYNET 2 [S2]", "http://177.52.24.163/SPORTYNET-2-HD/index.m3u8"),
     ("SPORTYNET 3 [S2]", "http://177.52.24.163/SPORTYNET-3-HD/index.m3u8"),
+    ("BAND SPORTS [S2]", "http://45.190.28.50/BAND_SPORTS_HD/index.m3u8"),
     ("GE TV [S2]", "http://177.52.24.163/GETV-HD/index.m3u8"),
-    ("TLC [S2]", "http://138.255.2.6:8084/TVSENADO/index.m3u8"),
+    ("CAZE TV [S2]", "http://177.52.24.163/CAZE-TV/index.m3u8"),
     ("HISTORY CHANNEL [S2]", "http://177.52.24.163/HISTORY-HD/index.m3u8"),
     ("DISCOVERY CHANNEL [S2]", "http://177.52.24.163/DISCOVERY-CHANNEL-HD/index.m3u8"),
+    ("DISCOVERY (ALT) [S2]", "http://45.190.28.50/DISCOVERY_HD/index.m3u8"),
     ("DISCOVERY SCIENCE [S2]", "http://177.52.24.163/DISCOVERY-SCIENCE-HD/index.m3u8"),
+    ("DISC. SCIENCE (ALT) [S2]", "http://45.190.28.50/DISCOVERY_SCIENCE_HD/index.m3u8"),
     ("DISCOVERY TURBO [S2]", "http://177.52.24.163/DISCOVERY-TURBO-HD/index.m3u8"),
+    ("DISC. TURBO (ALT) [S2]", "http://45.190.28.50/DISCOVERY_TURBO_HD/index.m3u8"),
     ("DISCOVERY WORLD [S2]", "http://177.52.24.163/DISCOVERY-WORLD-HD/index.m3u8"),
-    ("DICOVERY HOME & HEALT [S2]", "http://177.52.24.163/DISCOVERY-HH-HD/index.m3u8"),
+    ("DISC. WORLD (ALT) [S2]", "http://45.190.28.50/DISCOVERY_WORLD_HD/index.m3u8"),
+    ("DISC. HOME & HEALT [S2]", "http://177.52.24.163/DISCOVERY-HH-HD/index.m3u8"),
+    ("DISCOVERY THEATER [S2]", "http://45.190.28.50/DISCOVERY_THEATER_HD/index.m3u8"),
+    ("ID [S2]", "http://45.190.28.50/ID_HD/index.m3u8"),
     ("ANIMAL PLANET [S2]", "http://138.255.2.6:8084/ANIMALPLANET/index.m3u8"),
+    ("ANIMAL PLANET (ALT) [S2]", "http://45.190.28.50/ANIMAL_PLANET_HD/index.m3u8"),
+    ("HGTV [S2]", "http://45.190.28.50/HGTV_HD/index.m3u8"),
+    ("CINEMAX [S2]", "http://45.190.28.50/CINEMAX/index.m3u8"),
     ("LIFETIME [S2]", "http://138.255.2.6:8084/LIFETIME/index.m3u8"),
     ("SPACE [S2]", "http://138.255.2.6:8084/SPACE/index.m3u8"),
     ("MEGAPIX [S2]", "http://177.52.24.163/MEGAPIX-HD/index.m3u8"),
     ("AXN [S2]", "http://138.255.2.6:8084/AXN/index.m3u8"),
+    ("TLC [S2]", "http://138.255.2.6:8084/TVSENADO/index.m3u8"),
+    ("TLC (ALTERNATIVO) [S2]", "http://45.190.28.50/TLC_HD/index.m3u8"),
     ("PARAMOUNT 2 [S2]", "http://177.52.24.163/PARAMOUNT-2-HD/index.m3u8"),
     ("PARAMOUNT 3 [S2]", "http://177.52.24.163/PARAMOUNT-3-HD/index.m3u8"),
     ("PARAMOUNT 4 [S2]", "http://177.52.24.163/PARAMOUNT-4-HD/index.m3u8"),
@@ -83,6 +104,14 @@ MANUAL_CHANNELS = [
     ("TNT NOVELAS [S2]", "http://177.52.24.163/TELECINE-TOUCH-HD/index.m3u8"),
     ("TNT [S2]", "http://177.52.24.163/TNT-HD/index.m3u8"),
     ("TNT SERIES [S2]", "http://177.52.24.163/TNT-SERIES-HD/index.m3u8"),
+    ("WARNER [S2]", "http://45.190.28.50/WARNER_HD/index.m3u8"),
+    ("HBO [S2]", "http://45.190.28.50/HBO/index.m3u8"),
+    ("HBO2 [S2]", "http://45.190.28.50/HBO2/index.m3u8"),
+    ("HBO POP [S2]", "http://45.190.28.50/HBO_POP_HD/index.m3u8"),
+    ("HBO PLUS [S2]", "http://45.190.28.50/HBO_PLUS/index.m3u8"),
+    ("HBO FAMILY [S2]", "http://45.190.28.50/HBO_FAMILY/index.m3u8"),
+    ("HBO SIGNATURE [S2]", "http://45.190.28.50/HBO_SIGNATURE/index.m3u8"),
+    ("HBO MUNDI [S2]", "http://45.190.28.50/HBO_MUNDI_HD/index.m3u8"),
 ]
 
 def fetch_link(cid):
@@ -134,12 +163,11 @@ def m3u_route():
         output += f'#EXTVLCOPT:http-reconnect=true\n'
         output += f"{link}\n"
 
-    # 2. Canais da API com Camuflagem de App
+    # 2. Canais da API
     try:
         api_url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
         r = session.post(api_url, data={"userHistoric": "[]"}, timeout=20)
         content = r.text
-        
         items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
         data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', content)
         
@@ -176,7 +204,7 @@ def m3u_route():
 
 @app.route('/')
 def home():
-    return "Servidor V18.1 Híbrido ONLINE - CAZE TV Adicionada"
+    return "Servidor V19 Ultimate Hybrid ONLINE - Lista [S2] Atualizada"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
