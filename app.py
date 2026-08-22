@@ -25,7 +25,7 @@ HEADERS = {
 }
 session.headers.update(HEADERS)
 
-db = {"links": {}, "ids": [], "last_playlist": ""}
+db = {"links": {}, "ids": [], "last_playlist": "", "pluto_cache": ""}
 
 # --- LISTA MANUAL [S2] ATUALIZADA (V19.2) ---
 MANUAL_CHANNELS = [
@@ -117,6 +117,9 @@ MANUAL_CHANNELS = [
     ("HBO MUNDI [S2]", "http://45.190.28.50/HBO_MUNDI_HD/index.m3u8"),
 ]
 
+# --- CONFIGURAÇÃO PLUTO TV ---
+PLUTO_URL = "https://raw.githubusercontent.com/BuddyChewChew/pluto/main/pluto_br.m3u"
+
 def fetch_link(cid):
     try:
         url = f"https://app.megafrixapi.com/get_token_channel.php?channel={cid}"
@@ -129,9 +132,17 @@ def fetch_link(cid):
     except: return None
     return None
 
+def fetch_pluto():
+    try:
+        r = session.get(PLUTO_URL, timeout=15)
+        if r.status_code == 200:
+            db["pluto_cache"] = r.text
+    except: pass
+
 def preloader():
     while True:
         try:
+            fetch_pluto() # Atualiza cache da Pluto TV
             if db["ids"]:
                 for cid in db["ids"][:40]:
                     link = fetch_link(cid)
@@ -166,7 +177,41 @@ def m3u_route():
         output += f'#EXTVLCOPT:http-reconnect=true\n'
         output += f"{link}\n"
 
-    # 2. Canais da API com Camuflagem de App
+    # 2. Canais PLUTO TV (com sufixo [PLUTO])
+    pluto_data = db.get("pluto_cache") or ""
+    if not pluto_data:
+        try:
+            r = session.get(PLUTO_URL, timeout=10)
+            if r.status_code == 200:
+                pluto_data = r.text
+        except: pass
+        
+    if pluto_data:
+        lines = pluto_data.splitlines()
+        for i in range(len(lines)):
+            if lines[i].startswith("#EXTINF:"):
+                inf_line = lines[i]
+                url_line = ""
+                for j in range(i + 1, len(lines)):
+                    if not lines[j].startswith("#"):
+                        url_line = lines[j]
+                        break
+                
+                if not url_line: continue
+                
+                # Adicionar [PLUTO] no fim do nome
+                if "," in inf_line:
+                    parts = inf_line.rsplit(",", 1)
+                    name = parts[1].strip()
+                    new_inf = f"{parts[0]},{name} [PLUTO]"
+                else:
+                    new_inf = f"{inf_line} [PLUTO]"
+                
+                output += f"{new_inf}\n"
+                output += f'#EXTVLCOPT:network-caching=30000\n'
+                output += f"{url_line}\n"
+
+    # 3. Canais da API com Camuflagem de App
     try:
         api_url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
         r = session.post(api_url, data={"userHistoric": "[]"}, timeout=20)
@@ -207,7 +252,7 @@ def m3u_route():
 
 @app.route('/')
 def home():
-    return "Servidor V19.2 Híbrido ONLINE - RÁTIMBUM Adicionado"
+    return "Servidor V19.2 Híbrido ONLINE - RÁTIMBUM & PLUTO Adicionado"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
