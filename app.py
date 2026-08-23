@@ -169,7 +169,7 @@ def play(canal_id):
 def m3u_route():
     output = "#EXTM3U\n"
     base_url = request.host_url.rstrip('/')
-    
+
     # 1. Canais manuais [S2] com Buffer Turbo de 30s
     for name, link in MANUAL_CHANNELS:
         output += f'#EXTINF:-1 group-title="CANAIS [S2]",{name}\n'
@@ -185,7 +185,7 @@ def m3u_route():
             if r.status_code == 200:
                 pluto_data = r.text
         except: pass
-        
+
     if pluto_data:
         lines = pluto_data.splitlines()
         for i in range(len(lines)):
@@ -196,9 +196,9 @@ def m3u_route():
                     if not lines[j].startswith("#"):
                         url_line = lines[j]
                         break
-                
+
                 if not url_line: continue
-                
+
                 # Adicionar [PLUTO] no fim do nome
                 if "," in inf_line:
                     parts = inf_line.rsplit(",", 1)
@@ -206,9 +206,11 @@ def m3u_route():
                     new_inf = f"{parts[0]},{name} [PLUTO]"
                 else:
                     new_inf = f"{inf_line} [PLUTO]"
-                
+
                 output += f"{new_inf}\n"
-                output += f'#EXTVLCOPT:network-caching=30000\n'
+                output += f'#EXTVLCOPT:network-caching=5000\n'
+                output += f'#EXTVLCOPT:http-reconnect=true\n'
+                output += f'#EXTHTTP:{{"User-Agent":"{UA_OFFICIAL}"}}\n'
                 output += f"{url_line}\n"
 
     # 3. Canais da API com Camuflagem de App
@@ -218,7 +220,7 @@ def m3u_route():
         content = r.text
         items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
         data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', content)
-        
+
         new_ids = []
         for raw in ([d for l, d in items] + data_blocks):
             try:
@@ -226,20 +228,20 @@ def m3u_route():
                     data = json.loads(base64.b64decode(raw).decode('utf-8'))
                 except:
                     data = json.loads(raw.replace('\\"', '"'))
-                
+
                 cid = data.get('id')
                 if not cid: continue
                 new_ids.append(cid)
-                
+
                 c_name = re.sub('<[^<]+?>', '', data.get('titulo', data.get('name', 'Canal'))).strip()
                 logo = data.get('img', data.get('poster', ''))
-                
+
                 output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix Otimizado",{c_name}\n'
                 output += f'#EXTVLCOPT:network-caching=30000\n'
                 output += f'#EXTHTTP:{{"User-Agent":"{UA_OFFICIAL}","X-Requested-With":"com.megaflix.app"}}\n'
                 output += f"{base_url}/play/{cid}\n"
             except: continue
-        
+
         if new_ids:
             db["ids"] = new_ids
             db["last_playlist"] = output
@@ -247,7 +249,7 @@ def m3u_route():
     except:
         if db["last_playlist"]:
             return Response(db["last_playlist"], mimetype='text/plain')
-            
+
     return Response(output, mimetype='text/plain')
 
 @app.route('/')
