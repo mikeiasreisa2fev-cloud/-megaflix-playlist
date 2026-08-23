@@ -169,7 +169,7 @@ def play(canal_id):
 def m3u_route():
     base_url = request.host_url.rstrip('/')
 
-    # 1. Canais da API MegaFlix com Sufixo [S1] - AGORA EM PRIMEIRO
+    # 1. Canais da API MegaFlix com Sufixo [S1] - PRIMEIRO
     api_output = ""
     new_ids = []
     try:
@@ -191,7 +191,7 @@ def m3u_route():
                 new_ids.append(cid)
 
                 c_name = re.sub('<[^<]+?>', '', data.get('titulo', data.get('name', 'Canal'))).strip()
-                c_name = f"{c_name} [S1]" # Adiciona sufixo [S1]
+                c_name = f"{c_name} [S1]"
                 logo = data.get('img', data.get('poster', ''))
 
                 api_output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix [S1]",{c_name}\n'
@@ -203,10 +203,9 @@ def m3u_route():
         if new_ids:
             db["ids"] = new_ids
 
-    except:
-        pass # Em caso de erro, segue para as próximas listas sem os canais da API
+    except: pass
 
-    # 2. Canais manuais [S2] - EM SEGUNDO
+    # 2. Canais manuais [S2] - SEGUNDO
     manual_output = ""
     for name, link in MANUAL_CHANNELS:
         manual_output += f'#EXTINF:-1 group-title="CANAIS [S2]",{name}\n'
@@ -214,7 +213,7 @@ def m3u_route():
         manual_output += f'#EXTVLCOPT:http-reconnect=true\n'
         manual_output += f"{link}\n"
 
-    # 3. Canais PLUTO TV - EM TERCEIRO
+    # 3. Canais PLUTO TV - TERCEIRO (Método Proxy Anti-Loop)
     pluto_output = ""
     pluto_data = db.get("pluto_cache") or ""
     if not pluto_data:
@@ -245,10 +244,12 @@ def m3u_route():
                     new_inf = f"{inf_line} [PLUTO]"
 
                 pluto_output += f"{new_inf}\n"
-                pluto_output += f'#EXTVLCOPT:network-caching=30000\n'
-                pluto_output += f"{url_line}\n"
+                pluto_output += f'#EXTVLCOPT:network-caching=2000\n'
+                pluto_output += f'#EXTVLCOPT:http-reconnect=true\n'
+                # Gera link via proxy para matar o loop
+                enc_url = base64.b64encode(url_line.encode()).decode()
+                pluto_output += f"{base_url}/pluto_proxy?u={enc_url}\n"
 
-    # Monta a playlist final
     full_playlist = "#EXTM3U\n" + api_output + manual_output + pluto_output
     db["last_playlist"] = full_playlist
 
@@ -256,19 +257,35 @@ def m3u_route():
 
 @app.route('/pluto_proxy')
 def pluto_proxy():
+    from urllib.parse import urljoin
     try:
         encoded_url = request.args.get('u')
         if not encoded_url: return "URL ausente", 400
         url = base64.b64decode(encoded_url).decode()
 
-        # O segredo é buscar o manifesto sempre com o User-Agent oficial
-        # e sem deixar o player do usuário fazer cache do manifesto antigo
-        r = session.get(url, headers={"User-Agent": UA_OFFICIAL}, timeout=10)
-
-        # Ajustamos o manifesto para evitar que o player se perca
+        r = session.get(url, headers={"User-Agent": UA_OFFICIAL}, timeout=10, allow_redirects=True)
         content = r.text
 
-        resp = Response(content, mimetype='application/vnd.apple.mpegurl')
+        # Reescreve o manifesto para garantir que links relativos e sub-manifestos passem pelo proxy
+        lines = content.splitlines()
+        new_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line: continue
+            if line.startswith('#'):
+                new_lines.append(line)
+            else:
+                # Transforma link relativo em absoluto
+                abs_url = urljoin(url, line)
+                if ".m3u8" in abs_url.lower():
+                    # Se for outro manifesto, manda pro proxy novamente
+                    enc = base64.b64encode(abs_url.encode()).decode()
+                    new_lines.append(f"{request.host_url.rstrip('/')}/pluto_proxy?u={enc}")
+                else:
+                    # Se for segmento (.ts), mantém o link direto mas absoluto
+                    new_lines.append(abs_url)
+
+        resp = Response("\n".join(new_lines), mimetype='application/vnd.apple.mpegurl')
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
