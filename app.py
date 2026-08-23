@@ -245,10 +245,8 @@ def m3u_route():
                     new_inf = f"{inf_line} [PLUTO]"
 
                 pluto_output += f"{new_inf}\n"
-                pluto_output += f'#EXTVLCOPT:network-caching=3000\n'
-                pluto_output += f'#EXTVLCOPT:http-reconnect=true\n'
-                encoded_url = base64.b64encode(url_line.encode()).decode()
-                pluto_output += f"{base_url}/pluto_proxy?u={encoded_url}\n"
+                pluto_output += f'#EXTVLCOPT:network-caching=30000\n'
+                pluto_output += f"{url_line}\n"
 
     # Monta a playlist final
     full_playlist = "#EXTM3U\n" + api_output + manual_output + pluto_output
