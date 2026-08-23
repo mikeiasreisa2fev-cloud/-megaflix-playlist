@@ -213,7 +213,7 @@ def m3u_route():
         manual_output += f'#EXTVLCOPT:http-reconnect=true\n'
         manual_output += f"{link}\n"
 
-    # 3. Canais PLUTO TV - TERCEIRO (Método Proxy Anti-Loop)
+    # 3. Canais PLUTO TV - TERCEIRO
     pluto_output = ""
     pluto_data = db.get("pluto_cache") or ""
     if not pluto_data:
@@ -243,13 +243,18 @@ def m3u_route():
                 else:
                     new_inf = f"{inf_line} [PLUTO]"
 
-                pluto_output += f"{new_inf}\n"
-                pluto_output += f'#EXTVLCOPT:network-caching=2000\n'
-                pluto_output += f'#EXTVLCOPT:http-reconnect=true\n'
-                # Gera link via proxy para matar o loop
-                enc_url = base64.b64encode(url_line.encode()).decode()
-                pluto_output += f"{base_url}/pluto_proxy?u={enc_url}\n"
+                # Adiciona um parâmetro de tempo para tentar quebrar o loop de cache
+                timestamp = int(time.time())
+                separator = "&" if "?" in url_line else "?"
+                clean_url = f"{url_line}{separator}live_session={timestamp}"
 
+                pluto_output += f"{new_inf}\n"
+                pluto_output += f'#EXTVLCOPT:network-caching=5000\n'
+                pluto_output += f'#EXTVLCOPT:http-reconnect=true\n'
+                pluto_output += f'#EXTHTTP:{{"User-Agent":"{UA_OFFICIAL}"}}\n'
+                pluto_output += f"{clean_url}\n"
+
+    # Monta a playlist final
     full_playlist = "#EXTM3U\n" + api_output + manual_output + pluto_output
     db["last_playlist"] = full_playlist
 
