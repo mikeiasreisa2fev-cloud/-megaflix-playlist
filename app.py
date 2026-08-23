@@ -167,17 +167,55 @@ def play(canal_id):
 
 @app.route('/playlist.m3u')
 def m3u_route():
-    output = "#EXTM3U\n"
     base_url = request.host_url.rstrip('/')
 
-    # 1. Canais manuais [S2] com Buffer Turbo de 30s
-    for name, link in MANUAL_CHANNELS:
-        output += f'#EXTINF:-1 group-title="CANAIS [S2]",{name}\n'
-        output += f'#EXTVLCOPT:network-caching=30000\n'
-        output += f'#EXTVLCOPT:http-reconnect=true\n'
-        output += f"{link}\n"
+    # 1. Canais da API MegaFlix com Sufixo [S1] - AGORA EM PRIMEIRO
+    api_output = ""
+    new_ids = []
+    try:
+        api_url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
+        r = session.post(api_url, data={"userHistoric": "[]"}, timeout=20)
+        content = r.text
+        items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
+        data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', content)
 
-    # 2. Canais PLUTO TV (com sufixo [PLUTO])
+        for raw in ([d for l, d in items] + data_blocks):
+            try:
+                try:
+                    data = json.loads(base64.b64decode(raw).decode('utf-8'))
+                except:
+                    data = json.loads(raw.replace('\\"', '"'))
+
+                cid = data.get('id')
+                if not cid: continue
+                new_ids.append(cid)
+
+                c_name = re.sub('<[^<]+?>', '', data.get('titulo', data.get('name', 'Canal'))).strip()
+                c_name = f"{c_name} [S1]" # Adiciona sufixo [S1]
+                logo = data.get('img', data.get('poster', ''))
+
+                api_output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix [S1]",{c_name}\n'
+                api_output += f'#EXTVLCOPT:network-caching=30000\n'
+                api_output += f'#EXTHTTP:{{"User-Agent":"{UA_OFFICIAL}","X-Requested-With":"com.megaflix.app"}}\n'
+                api_output += f"{base_url}/play/{cid}\n"
+            except: continue
+
+        if new_ids:
+            db["ids"] = new_ids
+
+    except:
+        pass # Em caso de erro, segue para as próximas listas sem os canais da API
+
+    # 2. Canais manuais [S2] - EM SEGUNDO
+    manual_output = ""
+    for name, link in MANUAL_CHANNELS:
+        manual_output += f'#EXTINF:-1 group-title="CANAIS [S2]",{name}\n'
+        manual_output += f'#EXTVLCOPT:network-caching=30000\n'
+        manual_output += f'#EXTVLCOPT:http-reconnect=true\n'
+        manual_output += f"{link}\n"
+
+    # 3. Canais PLUTO TV - EM TERCEIRO
+    pluto_output = ""
     pluto_data = db.get("pluto_cache") or ""
     if not pluto_data:
         try:
@@ -199,7 +237,6 @@ def m3u_route():
 
                 if not url_line: continue
 
-                # Adicionar [PLUTO] no fim do nome
                 if "," in inf_line:
                     parts = inf_line.rsplit(",", 1)
                     name = parts[1].strip()
@@ -207,50 +244,39 @@ def m3u_route():
                 else:
                     new_inf = f"{inf_line} [PLUTO]"
 
-                output += f"{new_inf}\n"
-                output += f'#EXTVLCOPT:network-caching=5000\n'
-                output += f'#EXTVLCOPT:http-reconnect=true\n'
-                output += f'#EXTHTTP:{{"User-Agent":"{UA_OFFICIAL}"}}\n'
-                output += f"{url_line}\n"
+                pluto_output += f"{new_inf}\n"
+                pluto_output += f'#EXTVLCOPT:network-caching=3000\n'
+                pluto_output += f'#EXTVLCOPT:http-reconnect=true\n'
+                encoded_url = base64.b64encode(url_line.encode()).decode()
+                pluto_output += f"{base_url}/pluto_proxy?u={encoded_url}\n"
 
-    # 3. Canais da API com Camuflagem de App
+    # Monta a playlist final
+    full_playlist = "#EXTM3U\n" + api_output + manual_output + pluto_output
+    db["last_playlist"] = full_playlist
+
+    return Response(full_playlist, mimetype='text/plain')
+
+@app.route('/pluto_proxy')
+def pluto_proxy():
     try:
-        api_url = "https://app.megafrixapi.com/TV/1.2/?page=viewChannels"
-        r = session.post(api_url, data={"userHistoric": "[]"}, timeout=20)
+        encoded_url = request.args.get('u')
+        if not encoded_url: return "URL ausente", 400
+        url = base64.b64decode(encoded_url).decode()
+
+        # O segredo é buscar o manifesto sempre com o User-Agent oficial
+        # e sem deixar o player do usuário fazer cache do manifesto antigo
+        r = session.get(url, headers={"User-Agent": UA_OFFICIAL}, timeout=10)
+
+        # Ajustamos o manifesto para evitar que o player se perca
         content = r.text
-        items = re.findall(r"getSource\s*\(\s*['\"](.*?)['\"]\s*,\s*['\"](.*?)['\"]\s*\)", content)
-        data_blocks = re.findall(r'data-data=["\']([^"\']+)["\']', content)
 
-        new_ids = []
-        for raw in ([d for l, d in items] + data_blocks):
-            try:
-                try:
-                    data = json.loads(base64.b64decode(raw).decode('utf-8'))
-                except:
-                    data = json.loads(raw.replace('\\"', '"'))
-
-                cid = data.get('id')
-                if not cid: continue
-                new_ids.append(cid)
-
-                c_name = re.sub('<[^<]+?>', '', data.get('titulo', data.get('name', 'Canal'))).strip()
-                logo = data.get('img', data.get('poster', ''))
-
-                output += f'#EXTINF:-1 tvg-logo="{logo}" group-title="MegaFlix Otimizado",{c_name}\n'
-                output += f'#EXTVLCOPT:network-caching=30000\n'
-                output += f'#EXTHTTP:{{"User-Agent":"{UA_OFFICIAL}","X-Requested-With":"com.megaflix.app"}}\n'
-                output += f"{base_url}/play/{cid}\n"
-            except: continue
-
-        if new_ids:
-            db["ids"] = new_ids
-            db["last_playlist"] = output
-
-    except:
-        if db["last_playlist"]:
-            return Response(db["last_playlist"], mimetype='text/plain')
-
-    return Response(output, mimetype='text/plain')
+        resp = Response(content, mimetype='application/vnd.apple.mpegurl')
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
+    except Exception as e:
+        return str(e), 500
 
 @app.route('/')
 def home():
