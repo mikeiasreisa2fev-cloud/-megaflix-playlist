@@ -208,9 +208,10 @@ def m3u_route():
                     new_inf = f"{inf_line} [PLUTO]"
 
                 output += f"{new_inf}\n"
-                output += f'#EXTVLCOPT:network-caching=5000\n'
+                output += f'#EXTVLCOPT:network-caching=1000\n'
                 output += f'#EXTVLCOPT:http-reconnect=true\n'
-                output += f'#EXTHTTP:{{"User-Agent":"{UA_OFFICIAL}"}}\n'
+                output += f'#EXTVLCOPT:http-user-agent={UA_OFFICIAL}\n'
+                output += f'#EXTHTTP:{{"User-Agent":"{UA_OFFICIAL}","Connection":"keep-alive"}}\n'
                 output += f"{url_line}\n"
 
     # 3. Canais da API com Camuflagem de App
